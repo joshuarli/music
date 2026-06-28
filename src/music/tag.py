@@ -1,10 +1,11 @@
-#!/usr/bin/env python3
+"""Fingerprint an audio file and look up its MusicBrainz metadata via AcoustID."""
+
 import json
-import sys
-import subprocess
-import urllib.request
-import urllib.parse
 import os
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
 
 ACOUSTID_API_KEY = os.environ["ACOUSTID_API_KEY"]
 
@@ -13,10 +14,9 @@ def get_audio_fingerprint(file_path):
     try:
         result = subprocess.run(
             ['fpcalc', '-json', file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
         data = json.loads(result.stdout)
         return data.get('duration'), data.get('fingerprint')
@@ -29,6 +29,7 @@ def get_audio_fingerprint(file_path):
     except json.JSONDecodeError:
         print("Error: Failed to parse JSON from fpcalc output.", file=sys.stderr)
         sys.exit(1)
+
 
 def fetch_acoustid_metadata(duration, fingerprint):
     """Queries AcoustID API for MusicBrainz recordings and releases."""
@@ -45,20 +46,21 @@ def fetch_acoustid_metadata(duration, fingerprint):
         with urllib.request.urlopen(url) as response:
             if response.status != 200:
                 print(f"API HTTP Error: {response.status}", file=sys.stderr)
-                return
+                return None
 
             res_data = json.loads(response.read().decode('utf-8'))
 
             if res_data.get('status') != 'ok':
                 error_msg = res_data.get('error', {}).get('message', 'Unknown API error')
                 print(f"AcoustID API Error: {error_msg}", file=sys.stderr)
-                return
+                return None
 
             return res_data.get('results', [])
 
     except Exception as e:
         print(f"Network or parsing error: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 def print_results(results):
     """Parses and pretty-prints the track pipeline results."""
@@ -79,12 +81,10 @@ def print_results(results):
             print(f"\n🎵 MusicBrainz Recording ID: {rec.get('id')}")
             print(f"   Title: {rec.get('title')}")
 
-            # Print artists if available
             if 'artists' in rec:
                 artists = ", ".join([a['name'] for a in rec['artists']])
                 print(f"   Artist(s): {artists}")
 
-            # Print release metadata
             releases = rec.get('releases', [])
             if releases:
                 print("   📦 Associated Releases:")
@@ -92,7 +92,8 @@ def print_results(results):
                     year = rel.get('date', {}).get('year', 'Unknown Year')
                     print(f"     - [Release ID: {rel.get('id')}] {rel.get('title')} ({year})")
 
-if __name__ == '__main__':
+
+def main() -> None:
     file_path = sys.argv[1]
 
     print(f"Analyzing {file_path}...")
@@ -101,3 +102,7 @@ if __name__ == '__main__':
     if duration and fingerprint:
         results = fetch_acoustid_metadata(duration, fingerprint)
         print_results(results)
+
+
+if __name__ == '__main__':
+    main()
