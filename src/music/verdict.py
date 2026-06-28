@@ -49,60 +49,77 @@ from .constants import DSD, GREY, LOSSLESS, LOSSY_ALL, MAGENTA, RED
 VERDICT_W = 29
 
 # Thresholds (all dB, negative)
-BRICKWALL_DROP_DB = 25   # min drop between HF bands to flag as a codec brickwall
-LOW_ENERGY_DB = -50      # overall RMS below this = track too quiet to analyse
-NO_HF_DB = -72           # RMS in lower HF band below this = no HF content to measure
-
-
-def _measure_rms(filepath: Path, highpass_freq: int | None = None) -> float | None:
-    """Measure RMS level via ffmpeg astats, optionally after a highpass filter.
-
-    Returns RMS level in dB (negative), or None on failure.
-    Returns -200.0 sentinel for digital silence (-inf).
-    Analyses at most the first 60 seconds to keep scans fast.
-    """
-    if highpass_freq is not None:
-        af = f"highpass=f={highpass_freq},astats"
-    else:
-        af = "astats"
-
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-v", "info", "-t", "60",
-             "-i", str(filepath), "-af", af,
-             "-f", "null", "/dev/null"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=120,
-        )
-        matches = re.findall(r"RMS\s+level\s+dB:\s*(-?\d+\.?\d*|-inf)", result.stderr)
-        if not matches:
-            return None
-        last = matches[-1]  # overall measurement (appears after per-channel)
-        if "inf" in last:
-            return -200.0
-        return float(last)
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+BRICKWALL_DROP_DB = 25  # min drop between HF bands to flag as a codec brickwall
+LOW_ENERGY_DB = -50  # overall RMS below this = track too quiet to analyse
+NO_HF_DB = -72  # RMS in lower HF band below this = no HF content to measure
 
 
 def analyze_steepness(filepath: Path, sample_rate: int) -> dict[str, float | None] | None:
     """Run the two-point HF steepness test (see module docs for methodology).
 
+    Uses a single ffmpeg call with asplit=3 so the file is decoded once.
     Returns {'rms_overall', 'rms_low', 'rms_high'} in dB, or None on failure.
     """
     if sample_rate < 44100:
         return None
 
-    rms_overall = _measure_rms(filepath)
-    rms_low = _measure_rms(filepath, 18000)
-    rms_high = _measure_rms(filepath, 21500)
+    filter_graph = "asplit=3[a][b][c];[a]astats[aout];[b]highpass=f=18000,astats[bout];[c]highpass=f=21500,astats[cout]"
 
-    if rms_low is None or rms_high is None:
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "info",
+                "-t",
+                "60",
+                "-i",
+                str(filepath),
+                "-filter_complex",
+                filter_graph,
+                "-map",
+                "[aout]",
+                "-map",
+                "[bout]",
+                "-map",
+                "[cout]",
+                "-f",
+                "null",
+                "/dev/null",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired, OSError:
         return None
 
-    return {"rms_overall": rms_overall, "rms_low": rms_low, "rms_high": rms_high}
+    matches = re.findall(r"RMS\s+level\s+dB:\s*(-?\d+\.?\d*|-inf)", result.stderr)
+    if len(matches) % 3 != 0:
+        return None
+
+    per_astats = len(matches) // 3  # channels + 1
+    if per_astats < 2:
+        return None
+
+    # Each astats outputs per_astats lines (per-channel then overall).
+    # The three filter chains can complete in any order, but overall RMS
+    # is always the highest value (no highpass), low band is in the middle,
+    # and high band is the lowest.  Grab the last (overall) line from each
+    # group and sort by value to assign them.
+    def _parse(idx: int) -> float:
+        v = matches[idx]
+        return -200.0 if "inf" in v else float(v)
+
+    values = [
+        _parse(1 * per_astats - 1),
+        _parse(2 * per_astats - 1),
+        _parse(3 * per_astats - 1),
+    ]
+    values.sort(reverse=True)  # highest RMS first
+
+    return {"rms_overall": values[0], "rms_low": values[1], "rms_high": values[2]}
 
 
 def compute_verdict(codec: str, filepath: Path, sample_rate: int | None) -> tuple[str, int, bool]:

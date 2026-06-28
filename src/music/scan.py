@@ -6,8 +6,10 @@ codec detection.  Prints one line per file with ANSI 256-color output.
 """
 
 import json
+import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -38,14 +40,18 @@ TAGS_W = 20
 def _c(code: int) -> str:
     return f"\033[38;5;{code}m"
 
+
 def _bold() -> str:
     return "\033[1m"
+
 
 def _dim() -> str:
     return "\033[2m"
 
+
 def _rst() -> str:
     return "\033[0m"
+
 
 def colored(text: str, code: int, *, bold: bool = False, dim: bool = False) -> str:
     parts = [_c(code)]
@@ -93,9 +99,13 @@ def probe(filepath: Path) -> dict[str, Any] | None:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
-                "-print_format", "json",
-                "-show_format", "-show_streams",
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
                 str(filepath),
             ],
             capture_output=True,
@@ -105,7 +115,7 @@ def probe(filepath: Path) -> dict[str, Any] | None:
         if result.returncode != 0:
             return None
         return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+    except subprocess.TimeoutExpired, json.JSONDecodeError, OSError:
         return None
 
 
@@ -215,15 +225,68 @@ def collect_files(paths: list[str]) -> list[tuple[Path, str]]:
     return result
 
 
+def _process_file(args: tuple[Path, str]) -> str | None:
+    fp, display_path = args
+    data = probe(fp)
+    if data is None:
+        return None
+
+    streams = data.get("streams", [])
+    fmt = data.get("format", {})
+    tags = fmt.get("tags", {})
+
+    audio = find_audio_stream(streams)
+    if audio is None:
+        return None
+
+    codec = audio.get("codec_name", "?")
+    bitrate_str = audio.get("bit_rate") or fmt.get("bit_rate")
+    bitrate = int(bitrate_str) if bitrate_str else None
+    cover = has_cover_art(streams)
+
+    sample_rate_str = audio.get("sample_rate")
+    sample_rate = int(sample_rate_str) if sample_rate_str else None
+    verdict_text, verdict_color, verdict_dim = compute_verdict(codec, fp, sample_rate)
+
+    return (
+        f"  {fmt_codec(codec)}  {fmt_bitrate(bitrate, codec)}  "
+        f"{fmt_verdict(verdict_text, verdict_color, dim=verdict_dim)}  "
+        f"{fmt_cover(cover)}  "
+        f"{fmt_tags(tags)}  "
+        f"{colored(display_path, 51)}"
+    )
+
+
 def main() -> None:
-    paths = sys.argv[1:] if len(sys.argv) > 1 else ["."]
+    jobs = os.cpu_count() or 4
+    paths: list[str] = []
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-j", "--jobs"):
+            i += 1
+            if i < len(args):
+                jobs = int(args[i])
+        elif a.startswith("-j"):
+            jobs = int(a[2:])
+        elif a.startswith("--jobs="):
+            jobs = int(a.split("=", 1)[1])
+        else:
+            paths.append(a)
+        i += 1
+
+    if not paths:
+        paths = ["."]
 
     try:
         subprocess.run(
             ["ffprobe", "-version"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         print("error: ffprobe not found. Install ffmpeg.", file=sys.stderr)
         sys.exit(1)
 
@@ -240,33 +303,7 @@ def main() -> None:
     print(colored(header, 15, bold=True))
     print(colored("  " + "─" * (len(header) - 2), 240))
 
-    for fp, display_path in files:
-        data = probe(fp)
-        if data is None:
-            continue
-
-        streams = data.get("streams", [])
-        fmt = data.get("format", {})
-        tags = fmt.get("tags", {})
-
-        audio = find_audio_stream(streams)
-        if audio is None:
-            continue
-
-        codec = audio.get("codec_name", "?")
-        bitrate_str = audio.get("bit_rate") or fmt.get("bit_rate")
-        bitrate = int(bitrate_str) if bitrate_str else None
-        cover = has_cover_art(streams)
-
-        sample_rate_str = audio.get("sample_rate")
-        sample_rate = int(sample_rate_str) if sample_rate_str else None
-        verdict_text, verdict_color, verdict_dim = compute_verdict(codec, fp, sample_rate)
-
-        line = (
-            f"  {fmt_codec(codec)}  {fmt_bitrate(bitrate, codec)}  "
-            f"{fmt_verdict(verdict_text, verdict_color, dim=verdict_dim)}  "
-            f"{fmt_cover(cover)}  "
-            f"{fmt_tags(tags)}  "
-            f"{colored(display_path, 51)}"
-        )
-        print(line)
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        for line in ex.map(_process_file, files):
+            if line is not None:
+                print(line)
