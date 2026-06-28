@@ -264,11 +264,16 @@ def main() -> None:
         "bitrate, cover art, missing tags, and a lossy-transcode verdict.",
     )
     p.add_argument(
-        "-j", "--jobs", type=int, default=os.cpu_count() or 4,
+        "-j",
+        "--jobs",
+        type=int,
+        default=os.cpu_count() or 4,
         help="number of parallel workers (default: cpu count)",
     )
     p.add_argument(
-        "paths", nargs="*", default=["."],
+        "paths",
+        nargs="*",
+        default=["."],
         help="directories or files to scan",
     )
     args = p.parse_args()
@@ -280,7 +285,7 @@ def main() -> None:
             stderr=subprocess.DEVNULL,
             check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         print("error: ffprobe not found. Install ffmpeg.", file=sys.stderr)
         sys.exit(1)
 

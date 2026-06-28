@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Audio library tools: scan collections, fingerprint tracks"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "mutagen>=1.48.1",
+]
 
 [project.scripts]
 scan = "music.scan:main"
