@@ -226,7 +226,7 @@ def _raw_mode_exit(old: list[Any]) -> None:
 def _read_key() -> str | None:
     """Read a single keypress in raw mode.
 
-    Returns 'up', 'down', 'enter', 'q', 'ctrl-c', or None for unhandled keys.
+    Returns 'up', 'down', 'enter', 'q', 's', 'ctrl-c', or None for unhandled keys.
     """
     fd = sys.stdin.fileno()
     b = os.read(fd, 1)
@@ -235,6 +235,8 @@ def _read_key() -> str | None:
             return "enter"
         if b in (b"q", b"Q"):
             return "q"
+        if b in (b"s", b"S"):
+            return "s"
         if b == b"\x03":
             return "ctrl-c"
         return None
@@ -289,7 +291,7 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
             lines.append("  (no changes — tags already match)")
         lines.append("")
 
-        lines.append(dim("  ↑/↓ navigate  Enter select  q quit"))
+        lines.append(dim("  ↑/↓ navigate  Enter write  s skip  q quit"))
         return lines
 
     def _render(lines: list[str]) -> int:
@@ -309,7 +311,7 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
         elif key == "enter":
             _raw_mode_exit(old_termios)
             return selected
-        elif key in ("q", "ctrl-c"):
+        elif key in ("q", "ctrl-c") or key == "s":
             _raw_mode_exit(old_termios)
             print("\nAborted.")
             sys.exit(0)
@@ -402,14 +404,14 @@ def main() -> None:
         print("No changes to write (tags already match).")
         return
 
-    if not args.yes:
+    if not sys.stdout.isatty() and not args.yes:
         response = input("Write these tags? [y/N]: ").strip().lower()
         if response not in ("y", "yes"):
             print("Aborted.")
             return
 
-    write_tags(args.file, metadata)
-    print(f"Wrote tags to {args.file}.")
+    actual_path = write_tags(args.file, metadata)
+    print(f"Wrote tags to {actual_path}.")
 
 
 if __name__ == "__main__":

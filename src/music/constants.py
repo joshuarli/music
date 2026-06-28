@@ -39,6 +39,7 @@ AUDIO_EXTENSIONS = {
     ".ogg",
     ".opus",
     ".wav",
+    ".webm",
     ".aiff",
     ".aif",
     ".wma",
