@@ -36,6 +36,7 @@ from .tags import read_tags
 from .ui import bold, colored
 from .verdict import (
     BRICKWALL_DROP_DB,
+    HI_RES_NO_HF_DB,
     LOW_ENERGY_DB,
     NO_HF_DB,
     VERDICT_W,
@@ -225,6 +226,7 @@ def _print_file_detail(
     brickwall_threshold: float,
     low_energy_threshold: float,
     no_hf_threshold: float,
+    hi_res_no_hf_threshold: float,
 ) -> None:
     """Print a detailed single-file breakdown."""
     data = probe(fp)
@@ -259,6 +261,7 @@ def _print_file_detail(
         brickwall_threshold=brickwall_threshold,
         low_energy_threshold=low_energy_threshold,
         no_hf_threshold=no_hf_threshold,
+        hi_res_no_hf_threshold=hi_res_no_hf_threshold,
     )
 
     sep = colored("  " + "─" * 60, 240)
@@ -339,6 +342,12 @@ def main() -> None:
         help=f"RMS in 15 kHz band below this = no HF content (default: {NO_HF_DB})",
     )
     p.add_argument(
+        "--hi-res-no-hf-db",
+        type=float,
+        default=HI_RES_NO_HF_DB,
+        help=f"RMS above 25 kHz below this = likely upsampled hi-res file (default: {HI_RES_NO_HF_DB})",
+    )
+    p.add_argument(
         "paths",
         nargs="*",
         default=["."],
@@ -361,6 +370,7 @@ def main() -> None:
         "brickwall_threshold": args.brickwall_threshold,
         "low_energy_threshold": args.low_energy_db,
         "no_hf_threshold": args.no_hf_db,
+        "hi_res_no_hf_threshold": args.hi_res_no_hf_db,
     }
 
     files = collect_files(args.paths)

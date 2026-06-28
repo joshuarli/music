@@ -70,9 +70,9 @@ src/music/
 | `constants.py` | Shared data: mutagen-type quality tiers (`LOSSY_HIGH_TYPES`, `LOSSLESS_TYPES`, `DSD_TYPES` — use with `isinstance`), ffprobe codec-name sets (`LOSSY_HIGH`, `LOSSLESS`, `DSD` — for codec-level string matching), 256-color ANSI codes (`MAGENTA`, `GOLD`, …), `TAG_NAMES`, `AUDIO_EXTENSIONS`. No logic. |
 | `tags.py` | Single authority for mutagen tag read/write. `read_tags()` / `write_tags()` — the only place that imports mutagen file types. `write_tags()` detects opus/vorbis types and delegates to `transcode.py` before writing, using a tempdir so the original is kept intact on failure. |
 | `transcode.py` | ffmpeg audio transcoding. `probe_codec()` wraps ffprobe to detect the audio codec. `transcode_to_aac()` transcodes opus/vorbis to AAC at 256k in an M4A container using Apple AudioToolbox (`aac_at`) on macOS or ffmpeg's native `aac` elsewhere, with ffmpeg's progress bar shown on stderr. |
-| `verdict.py` | Lossy-transcode detection via multi-point spectral slope profile. Module docstring is the canonical methodology reference. Exports `compute_verdict(codec, filepath, sample_rate, **thresholds)` → `(text, color, dim)`. One ffmpeg call per file (`asplit=6` in a `filter_complex` graph with 5 highpass bands at 15/17/19/20.5/21.5 kHz). Thresholds are module-level constants (`BRICKWALL_DROP_DB`, `LOW_ENERGY_DB`, `NO_HF_DB`), overridable via kwargs and CLI flags. |
+| `verdict.py` | Lossy-transcode detection via multi-point spectral slope profile. Module docstring is the canonical methodology reference. Exports `compute_verdict(codec, filepath, sample_rate, **thresholds)` → `(text, color, dim)`. One ffmpeg call per file (`asplit=N` in a `filter_complex` graph with FIR energy-above-frequency bands at 15/17/19/20.5/21.5 kHz, plus 25 kHz for hi-res files). Thresholds are module-level constants (`BRICKWALL_DROP_DB`, `LOW_ENERGY_DB`, `NO_HF_DB`, `HI_RES_NO_HF_DB`), overridable via kwargs and CLI flags. |
 | `ui.py` | Shared ANSI formatting: `colored(text, code, bold, dim)`, `bold(text)`, `dim(text)`, `cursor_up(n)`, `clear_line()`, `clear_below()`. No business logic. |
-| `scan.py` | The `scan` CLI. `probe()` wraps ffprobe. `collect_files()` walks dirs. `_process_one()` does the per-file work (probe → format → verdict). `main()` runs a `ThreadPoolExecutor` over files (default `cpu_count` workers, override with `-j N`). Column widths and ANSI formatting live here. Single-file mode (`_print_file_detail()`) prints a full breakdown: streams, all tags, verdict. Supports `--brickwall-threshold`, `--low-energy-db`, `--no-hf-db`. |
+| `scan.py` | The `scan` CLI. `probe()` wraps ffprobe. `collect_files()` walks dirs. `_process_one()` does the per-file work (probe → format → verdict). `main()` runs a `ThreadPoolExecutor` over files (default `cpu_count` workers, override with `-j N`). Column widths and ANSI formatting live here. Single-file mode (`_print_file_detail()`) prints a full breakdown: streams, all tags, verdict. Supports `--brickwall-threshold`, `--low-energy-db`, `--no-hf-db`, `--hi-res-no-hf-db`. |
 | `tag.py` | The `tag` CLI. Fingerprints via `fpcalc`, looks up AcoustID, enriches with MusicBrainz (`_fetch_musicbrainz()`), interactive arrow-key selector with live diff (`interactive_select()`). Enter writes immediately (no confirmation prompt); `s` skips. Skips files with complete metadata unless `-f`/`--force`. `-y` skips the write confirmation in non-TTY mode. `--read` inspects local tags without any network call. |
 
 ## Commands
@@ -102,24 +102,25 @@ scan.main()
        └─ probe(fp)            # ffprobe → JSON
        └─ compute_verdict()    # from verdict.py
             ├─ LOSSY_ALL?  → "N/A (Lossy Codec)"
-            ├─ DSD?        → "True Lossless"
+            ├─ DSD?        → "Lossless Codec (DSD)"
             └─ LOSSLESS?   → analyze_steepness()
-                 └─ single ffmpeg call: asplit=6 + astats × 6
-                      ├─ overall RMS   (no filter)
-                      ├─ RMS above 15  kHz
-                      ├─ RMS above 17  kHz
-                      ├─ RMS above 19  kHz
-                      ├─ RMS above 20.5 kHz
-                      └─ RMS above 21.5 kHz
+                 └─ single ffmpeg call: asplit=N + firequalizer + astats
+                      ├─ overall RMS        (no filter)
+                      ├─ RMS peak above 15  kHz
+                      ├─ RMS peak above 17  kHz
+                      ├─ RMS peak above 19  kHz
+                      ├─ RMS peak above 20.5 kHz
+                      ├─ RMS peak above 21.5 kHz
+                      └─ RMS peak above 25  kHz (hi-res files only)
 ```
 
-The six astats outputs arrive in stderr in any order.  `analyze_steepness`
-sorts the six overall-RMS values descending: highest = overall, then ascending
-highpass frequency.  This is always correct because RMS can only decrease as
-you apply more aggressive highpass filters.  The maximum adjacent drop across
-all band pairs is checked against `BRICKWALL_DROP_DB` — a brickwall
-concentrates its energy gap into a single pair, while a natural roll-off
-distributes the drop evenly.
+The astats outputs arrive in stderr in any order.  `analyze_steepness` sorts
+the short-window RMS peak values descending: highest = overall, then ascending
+analysis frequency.  The maximum adjacent drop across the standard 15–21.5 kHz
+band pairs is checked against `BRICKWALL_DROP_DB` — a brickwall concentrates
+its energy gap into a single pair, while a natural roll-off distributes the
+drop evenly. Hi-res files also get a separate 25 kHz check; missing energy
+there is reported as a likely upsample, not as a lossy transcode.
 
 ### Why asplit=N
 
@@ -134,11 +135,12 @@ iterator — results print in file-system order.
 
 ### Multi-point slope profile
 
-The detector measures RMS at five frequency bands (15k, 17k, 19k, 20.5k,
-21.5k Hz) plus an unfiltered overall level.  A single two-point drop (e.g.
-18→21.5 kHz) misses 128 kbps MP3 brickwalls at 16 kHz.  Five bands catch
-brickwalls at any common encoder cutoff — the steepest adjacent drop is the
-smoking gun.
+The detector measures short-window RMS peak at five frequency bands (15k, 17k,
+19k, 20.5k, 21.5k Hz) plus an unfiltered overall level.  A single two-point
+drop (e.g. 18→21.5 kHz) misses 128 kbps MP3 brickwalls at 16 kHz.  Five bands
+catch brickwalls at any common encoder cutoff — the steepest adjacent drop is
+the smoking gun. Using RMS peak-hold avoids diluting a full-bandwidth passage
+with a sparse intro while still ignoring isolated sample peaks.
 
 ### Verdict thresholds
 
@@ -149,6 +151,15 @@ All in `verdict.py` as module-level constants, overridable via CLI flags on `sca
 | `BRICKWALL_DROP_DB` | `--brickwall-threshold` | 25 dB | Min drop between adjacent HF bands to flag a codec brickwall |
 | `LOW_ENERGY_DB` | `--low-energy-db` | -50 dB | Overall RMS below this = track too quiet to analyse |
 | `NO_HF_DB` | `--no-hf-db` | -72 dB | RMS in 15 kHz band below this = no HF content at all |
+| `HI_RES_NO_HF_DB` | `--hi-res-no-hf-db` | -50 dB | RMS above 25 kHz below this = likely 44.1/48 kHz upsample |
+
+### TODO
+
+- Build a calibration corpus: known lossless tracks, the same tracks transcoded
+  to MP3/AAC/Opus at common bitrates and converted back to FLAC, plus a few
+  known 44.1/48 kHz files upsampled to 96 kHz. Use it to tune
+  `BRICKWALL_DROP_DB`, `LOW_ENERGY_DB`, `NO_HF_DB`, and `HI_RES_NO_HF_DB`
+  against measured band profiles instead of intuition.
 
 ### Tag flow
 

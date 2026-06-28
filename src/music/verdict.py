@@ -23,14 +23,17 @@ Design decisions:
 - **Multi-point over two-point** — A single-drop test at 18→21.5 kHz misses
   128 kbps MP3 brickwalls at 16 kHz.  Measuring at 15/17/19/20.5/21.5 kHz
   catches brickwalls at any common encoder cutoff.
-- **RMS over Peak** — Peak level is thrown off by a single click or transient.
-  RMS measures sustained energy, which is what spectral content actually means.
+- **RMS peak-hold over sample peak** — `astats` reports the loudest short-window
+  RMS across the scan. This preserves sparse full-bandwidth passages without
+  letting a single click dominate the measurement.
 - **Maximum adjacent drop** — A brickwall concentrates its energy gap into a
   single adjacent band pair; a natural roll-off distributes the drop evenly.
 - **Fixed analysis frequencies** — Codified in BRICKWALL_DROP_DB / LOW_ENERGY_DB
   / NO_HF_DB so the thresholds are easy to tune after field experience.
 - **First 60 seconds only (-t 60)** — Keeps scans fast; the spectral signature
   is consistent across a track.
+- **Hi-res check is separate** — 88.2/96/192 kHz files with no energy above
+  25 kHz are flagged as upsampled, not as lossy transcodes.
 
 Guards:
 
@@ -40,7 +43,8 @@ Guards:
   No HF content at all to measure (naturally bass-heavy track, or a very
   low-bitrate transcode below our analysis window).
 - Lossy codecs -> "N/A (Lossy Codec)".  The file already declares itself lossy.
-- DSD -> "True Lossless".  DSD cannot realistically be a lossy transcode.
+- DSD -> "Lossless Codec (DSD)".  DSD is treated as out of scope for the
+  PCM brickwall detector.
 """
 
 import re
@@ -55,31 +59,41 @@ VERDICT_W = 29
 BRICKWALL_DROP_DB = 25  # min drop between adjacent HF bands to flag as a codec brickwall
 LOW_ENERGY_DB = -50  # overall RMS below this = track too quiet to analyse
 NO_HF_DB = -72  # RMS in 15 kHz band below this = no HF content to measure
+HI_RES_NO_HF_DB = -50  # RMS above 25 kHz below this = likely 44.1/48 kHz upsample
 
-# Highpass frequencies for the multi-point slope profile (Hz)
+# Analysis frequencies for the multi-point slope profile (Hz)
 HP_FREQS = (15000, 17000, 19000, 20500, 21500)
+HI_RES_HP_FREQ = 25000
 NUM_BANDS = len(HP_FREQS) + 1  # +1 for unfiltered overall
 
 
-def analyze_steepness(filepath: Path, sample_rate: int) -> dict[str, float | None] | None:
+def analyze_steepness(filepath: Path, sample_rate: int) -> dict[str, float] | None:
     """Run the multi-point HF steepness test (see module docs for methodology).
 
     Uses a single ffmpeg call with asplit=N so the file is decoded once.
-    Returns {'rms_overall', 'rms_15000', 'rms_17000', 'rms_19000',
-             'rms_20500', 'rms_21500'} in dB, or None on failure.
+    Returns {'rms_overall', 'rms_peak_overall', 'rms_peak_15000',
+             'rms_peak_17000', 'rms_peak_19000', 'rms_peak_20500',
+             'rms_peak_21500'} in dB, plus 'rms_peak_25000' for hi-res
+    material, or None on failure.
     """
     if sample_rate < 44100:
         return None
 
-    # Build the filter graph: asplit=N for each band, each measured with astats
-    labels = [chr(ord("a") + i) for i in range(NUM_BANDS)]
-    splits = "".join(f"[{c}]" for c in labels)
-    chains = ["[a]astats[aout]"]  # unfiltered
-    for i, freq in enumerate(HP_FREQS):
-        c = labels[i + 1]
-        chains.append(f"[{c}]highpass=f={freq},astats[{c}out]")
+    include_hi_res = sample_rate > 48000
+    hp_freqs = (*HP_FREQS, HI_RES_HP_FREQ) if include_hi_res else HP_FREQS
+    num_bands = len(hp_freqs) + 1
 
-    filter_graph = f"asplit={NUM_BANDS}{splits};" + ";".join(chains)
+    # Build the filter graph: asplit=N for each band, each measured with astats
+    labels = [chr(ord("a") + i) for i in range(num_bands)]
+    splits = "".join(f"[{c}]" for c in labels)
+    astats = "astats=measure_overall=RMS_level+RMS_peak:measure_perchannel=none"
+    chains = [f"[a]{astats}[aout]"]  # unfiltered
+    for i, freq in enumerate(hp_freqs):
+        c = labels[i + 1]
+        energy_above = f"firequalizer=gain='if(gte(f\\,{freq})\\,0\\,-120)'"
+        chains.append(f"[{c}]{energy_above},{astats}[{c}out]")
+
+    filter_graph = f"asplit={num_bands}{splits};" + ";".join(chains)
 
     try:
         result = subprocess.run(
@@ -108,33 +122,35 @@ def analyze_steepness(filepath: Path, sample_rate: int) -> dict[str, float | Non
     except subprocess.TimeoutExpired, OSError:
         return None
 
-    matches = re.findall(r"RMS\s+level\s+dB:\s*(-?\d+\.?\d*|-inf)", result.stderr)
-    if len(matches) % NUM_BANDS != 0:
+    if result.returncode != 0:
         return None
 
-    per_astats = len(matches) // NUM_BANDS  # channels + 1
-    if per_astats < 2:
+    rms_level_matches = re.findall(r"RMS\s+level\s+dB:\s*(-?\d+\.?\d*|-inf)", result.stderr)
+    rms_peak_matches = re.findall(r"RMS\s+peak\s+dB:\s*(-?\d+\.?\d*|-inf)", result.stderr)
+    if len(rms_level_matches) != num_bands or len(rms_peak_matches) != num_bands:
         return None
 
-    def _parse(idx: int) -> float:
-        v = matches[idx]
+    def _parse(v: str) -> float:
         return -200.0 if "inf" in v else float(v)
 
-    # Each astats outputs per_astats lines (per-channel then overall).  The
-    # groups can complete in any order, but overall RMS always decreases as
-    # the highpass frequency increases.  Grab the last (overall) line from
-    # each group and sort descending to assign bands.
-    values = [_parse(i * per_astats - 1) for i in range(1, NUM_BANDS + 1)]
-    values.sort(reverse=True)  # highest RMS first = unfiltered, then ascending HP frequency
+    # The astats branches can finish in any order, but both total RMS and
+    # short-window RMS peak decrease as the analysis frequency rises.  Sort
+    # descending to assign the unfiltered signal followed by ascending bands.
+    rms_levels = sorted((_parse(v) for v in rms_level_matches), reverse=True)
+    rms_peaks = sorted((_parse(v) for v in rms_peak_matches), reverse=True)
 
-    return {
-        "rms_overall": values[0],
-        "rms_15000": values[1],
-        "rms_17000": values[2],
-        "rms_19000": values[3],
-        "rms_20500": values[4],
-        "rms_21500": values[5],
+    spec = {
+        "rms_overall": rms_levels[0],
+        "rms_peak_overall": rms_peaks[0],
+        "rms_peak_15000": rms_peaks[1],
+        "rms_peak_17000": rms_peaks[2],
+        "rms_peak_19000": rms_peaks[3],
+        "rms_peak_20500": rms_peaks[4],
+        "rms_peak_21500": rms_peaks[5],
     }
+    if include_hi_res:
+        spec["rms_peak_25000"] = rms_peaks[6]
+    return spec
 
 
 def compute_verdict(
@@ -145,17 +161,19 @@ def compute_verdict(
     brickwall_threshold: float = BRICKWALL_DROP_DB,
     low_energy_threshold: float = LOW_ENERGY_DB,
     no_hf_threshold: float = NO_HF_DB,
+    hi_res_no_hf_threshold: float = HI_RES_NO_HF_DB,
 ) -> tuple[str, int, bool]:
     """Return (verdict_text, color_code, dim) for an audio file.
 
     Lossy codec      -> "N/A (Lossy Codec)"
-    DSD              -> "True Lossless"
+    DSD              -> "Lossless Codec (DSD)"
     Unknown codec    -> "Unknown Codec"
     Low sample rate  -> "Inconclusive (Low SR)"
     Low overall RMS  -> "Inconclusive (Low Energy)"
     No HF content    -> "Inconclusive (Low Energy)"
     Steep brickwall  -> "Suspected Transcode (Lossy)"
-    Otherwise        -> "True Lossless"
+    Hi-res upsample  -> "Likely Upsampled"
+    Otherwise        -> "No Brickwall Detected"
     """
     cl = codec.lower()
 
@@ -163,7 +181,7 @@ def compute_verdict(
         return ("N/A (Lossy Codec)", GREY, True)
 
     if cl in DSD:
-        return ("True Lossless", MAGENTA, False)
+        return ("Lossless Codec (DSD)", MAGENTA, False)
 
     if cl not in LOSSLESS:
         return ("Unknown Codec", GREY, True)
@@ -176,12 +194,9 @@ def compute_verdict(
         return ("Error", RED, False)
 
     rms_overall = spec["rms_overall"]
-    rms_15000 = spec["rms_15000"]
-    rms_21500 = spec["rms_21500"]
-    assert rms_15000 is not None
-    assert rms_21500 is not None
+    rms_15000 = spec["rms_peak_15000"]
 
-    if rms_overall is not None and rms_overall < low_energy_threshold:
+    if rms_overall < low_energy_threshold:
         return ("Inconclusive (Low Energy)", GREY, True)
 
     if rms_15000 < no_hf_threshold:
@@ -189,15 +204,18 @@ def compute_verdict(
 
     # Check the maximum adjacent drop across all band pairs
     band_values = [
-        rms_overall,
-        spec["rms_15000"],
-        spec["rms_17000"],
-        spec["rms_19000"],
-        spec["rms_20500"],
-        spec["rms_21500"],
+        spec["rms_peak_overall"],
+        spec["rms_peak_15000"],
+        spec["rms_peak_17000"],
+        spec["rms_peak_19000"],
+        spec["rms_peak_20500"],
+        spec["rms_peak_21500"],
     ]
-    max_drop = max((band_values[i] or -200) - (band_values[i + 1] or -200) for i in range(len(band_values) - 1))
+    max_drop = max(band_values[i] - band_values[i + 1] for i in range(len(band_values) - 1))
     if max_drop > brickwall_threshold:
         return ("Suspected Transcode (Lossy)", RED, False)
 
-    return ("True Lossless", MAGENTA, False)
+    if sample_rate > 48000 and spec.get("rms_peak_25000", -200.0) < hi_res_no_hf_threshold:
+        return ("Likely Upsampled", GREY, True)
+
+    return ("No Brickwall Detected", MAGENTA, False)
