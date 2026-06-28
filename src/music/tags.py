@@ -1,0 +1,93 @@
+"""Tag reading and writing via mutagen.  Shared by scan and tag — the single
+place that touches mutagen for metadata I/O.
+"""
+
+import sys
+
+from mutagen import File as MutagenFile
+from mutagen.easyid3 import EasyID3
+from mutagen.easymp4 import EasyMP4
+from mutagen.flac import FLAC
+from mutagen.mp3 import MP3
+from mutagen.mp4 import MP4
+from mutagen.oggvorbis import OggVorbis
+
+# Fields we care about, in display order
+TAG_FIELDS = ("title", "artist", "album", "date", "tracknumber", "albumartist", "genre")
+
+
+def read_tags(filepath: str) -> dict[str, str]:
+    """Read tags from *filepath* using mutagen.
+
+    Returns a dict mapping field name to string value.  Fields that are
+    absent or empty are omitted from the dict.
+    """
+    try:
+        audio = MutagenFile(filepath)
+    except Exception:
+        return {}
+
+    if audio is None:
+        return {}
+
+    result: dict[str, str] = {}
+
+    if isinstance(audio, (FLAC, OggVorbis)):
+        tags = audio.tags
+        if tags is None:
+            return result
+        for key in TAG_FIELDS:
+            vals = tags.get(key)
+            if vals:
+                result[key] = vals[0] if isinstance(vals, list) else str(vals)
+    elif isinstance(audio, MP3):
+        try:
+            easy = EasyID3(filepath)
+        except Exception:
+            return result
+        for key in TAG_FIELDS:
+            vals = easy.get(key)
+            if vals:
+                result[key] = vals[0] if isinstance(vals, list) else str(vals)
+    elif isinstance(audio, MP4):
+        try:
+            easy = EasyMP4(filepath)
+        except Exception:
+            return result
+        for key in TAG_FIELDS:
+            vals = easy.get(key)
+            if vals:
+                result[key] = vals[0] if isinstance(vals, list) else str(vals)
+
+    return result
+
+
+def write_tags(filepath: str, metadata: dict[str, str]) -> None:
+    """Write *metadata* to *filepath* using mutagen."""
+    audio = MutagenFile(filepath)
+    if audio is None:
+        print(f"error: unsupported audio format: {filepath}", file=sys.stderr)
+        sys.exit(1)
+
+    if isinstance(audio, (FLAC, OggVorbis)):
+        if audio.tags is None:
+            audio.add_tags()
+        for key in TAG_FIELDS:
+            if key in metadata:
+                audio.tags[key] = [metadata[key]]
+        audio.save()
+    elif isinstance(audio, MP3):
+        easy = EasyID3(filepath)
+        for key in TAG_FIELDS:
+            if key in metadata:
+                easy[key] = [metadata[key]]
+        easy.save()
+    elif isinstance(audio, MP4):
+        easy = EasyMP4(filepath)
+        for key in TAG_FIELDS:
+            if key in metadata:
+                easy[key] = [metadata[key]]
+        easy.save()
+    else:
+        print(f"error: unsupported audio format: {filepath}", file=sys.stderr)
+        sys.exit(1)

@@ -60,11 +60,12 @@ AUDIO_EXTENSIONS = {
     ".oga",
 }
 
+# (display label, mutagen key) for the four standard tags shown in the MISSING column
 TAG_NAMES = [
-    ("TITLE", ("title", "TITLE", "TIT2")),
-    ("ARTIST", ("artist", "ARTIST", "TPE1")),
-    ("ALBUM", ("album", "ALBUM", "TALB")),
-    ("TRACK", ("track", "TRACK", "TRACKNUMBER", "TRCK")),
+    ("TITLE", "title"),
+    ("ARTIST", "artist"),
+    ("ALBUM", "album"),
+    ("TRACK", "tracknumber"),
 ]
 
 # ANSI 256-color codes — gaming-loot quality scale

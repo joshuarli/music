@@ -1,5 +1,7 @@
 """Fingerprint an audio file, look up its MusicBrainz metadata via AcoustID,
 and write selected tags to the file with mutagen.
+
+Also supports a --read mode to inspect existing tags without any network call.
 """
 
 import argparse
@@ -12,15 +14,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from mutagen import File as MutagenFile
-from mutagen.easyid3 import EasyID3
-from mutagen.easymp4 import EasyMP4
-from mutagen.flac import FLAC
-from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4
-from mutagen.oggvorbis import OggVorbis
-
-TAG_FIELDS = ("title", "artist", "album", "date")
+from .tags import TAG_FIELDS, read_tags, write_tags
+from .ui import bold, cursor_up, dim
 
 
 def get_audio_fingerprint(file_path):
@@ -81,6 +76,51 @@ def fetch_acoustid_metadata(duration, fingerprint):
         sys.exit(1)
 
 
+def _fetch_musicbrainz(recording_mbid: str) -> dict[str, str]:
+    """Query MusicBrainz API for track number, genre, and album artist.
+
+    Returns a dict with only the keys that could be extracted.
+    """
+    meta: dict[str, str] = {}
+    url = f"https://musicbrainz.org/ws/2/recording/{recording_mbid}?inc=genres+artists+releases&fmt=json"
+    req = urllib.request.Request(url, headers={"User-Agent": "music-tag/0.1"})
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return meta
+
+    # Genre — take top 3 by count
+    genres = data.get("genres", [])
+    if genres:
+        top = sorted(genres, key=lambda g: g.get("count", 0), reverse=True)
+        meta["genre"] = ", ".join(g["name"] for g in top[:3] if g.get("name"))
+
+    # Track number — search releases for a track whose recording ID matches
+    releases = data.get("releases", [])
+    for rel in releases:
+        for medium in rel.get("media", []):
+            for track in medium.get("tracks", []):
+                if track.get("recording", {}).get("id") == recording_mbid:
+                    tn = track.get("number")
+                    if tn:
+                        meta["tracknumber"] = str(tn)
+                    break
+            if "tracknumber" in meta:
+                break
+        if "tracknumber" in meta:
+            break
+
+    # Album artist — from the first release's artist-credit
+    if releases:
+        ac = releases[0].get("artist-credit", [])
+        if ac:
+            meta["albumartist"] = "".join(a.get("name", "") + a.get("joinphrase", "") for a in ac)
+
+    return meta
+
+
 def extract_metadata(result: dict[str, Any]) -> dict[str, str]:
     """Pull title, artist, album, date from one AcoustID result.
 
@@ -127,49 +167,18 @@ def format_match_line(idx: int, result: dict[str, Any]) -> str:
     return f"  #{idx}  {score:3.0f}%  {title} — {artist}{album_str}{year_str}"
 
 
-def _format_tags(filepath: str) -> dict[str, str]:
-    """Read current tags from *filepath* using mutagen.
+def _print_tags(filepath: str) -> None:
+    """Pretty-print all tags from *filepath*."""
+    tags = read_tags(filepath)
+    if not tags:
+        print("  (no tags)")
+        return
 
-    Returns a dict mapping field name to string value (empty fields omitted).
-    """
-    try:
-        audio = MutagenFile(filepath)
-    except Exception:
-        return {}
-
-    if audio is None:
-        return {}
-
-    result: dict[str, str] = {}
-
-    if isinstance(audio, (FLAC, OggVorbis)):
-        tags = audio.tags
-        if tags is None:
-            return result
-        for key in TAG_FIELDS:
-            vals = tags.get(key)
-            if vals:
-                result[key] = vals[0] if isinstance(vals, list) else str(vals)
-    elif isinstance(audio, MP3):
-        try:
-            easy = EasyID3(filepath)
-        except Exception:
-            return result
-        for key in TAG_FIELDS:
-            vals = easy.get(key)
-            if vals:
-                result[key] = vals[0] if isinstance(vals, list) else str(vals)
-    elif isinstance(audio, MP4):
-        try:
-            easy = EasyMP4(filepath)
-        except Exception:
-            return result
-        for key in TAG_FIELDS:
-            vals = easy.get(key)
-            if vals:
-                result[key] = vals[0] if isinstance(vals, list) else str(vals)
-
-    return result
+    key_w = max(len(k) for k in tags)
+    for key in TAG_FIELDS:
+        val = tags.get(key)
+        if val:
+            print(f"  {bold(key):<{key_w + 11}s} {val}")
 
 
 def format_diff(current: dict[str, str], new: dict[str, str]) -> list[str]:
@@ -179,7 +188,6 @@ def format_diff(current: dict[str, str], new: dict[str, str]) -> list[str]:
     if not all_keys:
         return lines
 
-    # Determine column widths for alignment
     key_w = max(len(k) for k in all_keys)
     cur_w = max((len(current.get(k, "(none)")) for k in all_keys), default=0)
     new_w = max((len(new.get(k, "(none)")) for k in all_keys), default=0)
@@ -195,37 +203,6 @@ def format_diff(current: dict[str, str], new: dict[str, str]) -> list[str]:
         lines.append(f"    {key:<{key_w}s}  {cur_display:<{cur_w}s} {arrow} {new_display:<{new_w}s}")
 
     return lines
-
-
-def _write_tags(filepath: str, metadata: dict[str, str]) -> None:
-    """Write *metadata* to *filepath* using mutagen."""
-    audio = MutagenFile(filepath)
-    if audio is None:
-        print(f"error: unsupported audio format: {filepath}", file=sys.stderr)
-        sys.exit(1)
-
-    if isinstance(audio, (FLAC, OggVorbis)):
-        if audio.tags is None:
-            audio.add_tags()
-        for key in TAG_FIELDS:
-            if key in metadata:
-                audio.tags[key] = [metadata[key]]
-        audio.save()
-    elif isinstance(audio, MP3):
-        easy = EasyID3(filepath)
-        for key in TAG_FIELDS:
-            if key in metadata:
-                easy[key] = [metadata[key]]
-        easy.save()
-    elif isinstance(audio, MP4):
-        easy = EasyMP4(filepath)
-        for key in TAG_FIELDS:
-            if key in metadata:
-                easy[key] = [metadata[key]]
-        easy.save()
-    else:
-        print(f"error: unsupported audio format: {filepath}", file=sys.stderr)
-        sys.exit(1)
 
 
 def _raw_mode_enter() -> list[Any]:
@@ -290,7 +267,7 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
     old_termios = _raw_mode_enter()
     selected = 0
     n = len(results)
-    current_tags = _format_tags(filepath)
+    current_tags = read_tags(filepath)
 
     def _build_lines(idx: int) -> list[str]:
         lines: list[str] = []
@@ -298,7 +275,7 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
         for i, r in enumerate(results):
             line = format_match_line(i + 1, r)
             if i == idx:
-                lines.append(f"\033[1m▶{line}\033[0m")
+                lines.append(bold(f"▶{line}"))
             else:
                 lines.append(f"  {line}")
         lines.append("")
@@ -306,13 +283,13 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
         meta = extract_metadata(results[idx])
         diff = format_diff(current_tags, meta)
         if diff:
-            lines.append("  Changes:")
+            lines.append("  Changes (AcoustID):")
             lines.extend(diff)
         else:
             lines.append("  (no changes — tags already match)")
         lines.append("")
 
-        lines.append("  \033[2m↑/↓ navigate  Enter select  q quit\033[0m")
+        lines.append(dim("  ↑/↓ navigate  Enter select  q quit"))
         return lines
 
     def _render(lines: list[str]) -> int:
@@ -339,8 +316,7 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
         else:
             continue
 
-        # Move cursor up to start of interactive block and re-render
-        sys.stdout.write(f"\033[{block_height}A")
+        cursor_up(block_height)
         block_height = _render(_build_lines(selected))
 
 
@@ -352,7 +328,7 @@ def _fallback_select(results: list[dict[str, Any]]) -> int:
     print()
     try:
         choice = input(f"Select [1-{len(results)}, q=quit]: ").strip()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError, KeyboardInterrupt:
         print("\nAborted.")
         sys.exit(0)
 
@@ -379,7 +355,13 @@ def main() -> None:
     )
     p.add_argument("file", help="audio file to fingerprint")
     p.add_argument("-y", "--yes", action="store_true", help="skip write confirmation")
+    p.add_argument("--read", action="store_true", help="print current tags and exit (no network)")
     args = p.parse_args()
+
+    if args.read:
+        print(f"Tags in {args.file}:")
+        _print_tags(args.file)
+        return
 
     print(f"Analyzing {args.file}...")
     duration, fingerprint = get_audio_fingerprint(args.file)
@@ -403,7 +385,16 @@ def main() -> None:
 
     selected = results[selected_idx]
     metadata = extract_metadata(selected)
-    current_tags = _format_tags(args.file)
+
+    # Enrich with MusicBrainz data (track number, genre, album artist)
+    recordings = selected.get("recordings", [])
+    if recordings:
+        mbid = recordings[0].get("id")
+        if mbid:
+            mb_meta = _fetch_musicbrainz(mbid)
+            metadata.update(mb_meta)
+
+    current_tags = read_tags(args.file)
     diff = format_diff(current_tags, metadata)
 
     print()
@@ -417,7 +408,7 @@ def main() -> None:
             print("Aborted.")
             return
 
-    _write_tags(args.file, metadata)
+    write_tags(args.file, metadata)
     print(f"Wrote tags to {args.file}.")
 
 

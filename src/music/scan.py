@@ -3,6 +3,9 @@ metadata, and a lossy-transcode verdict.
 
 Uses ffprobe and ffmpeg for all analysis — file extensions are ignored for
 codec detection.  Prints one line per file with ANSI 256-color output.
+
+When given a single file path (not a directory), prints a detailed per-file
+breakdown instead of the tabular scan view.
 """
 
 import argparse
@@ -29,40 +32,21 @@ from .constants import (
     RED,
     TAG_NAMES,
 )
-from .verdict import VERDICT_W, compute_verdict
+from .tags import read_tags
+from .ui import bold, colored
+from .verdict import (
+    BRICKWALL_DROP_DB,
+    LOW_ENERGY_DB,
+    NO_HF_DB,
+    VERDICT_W,
+    compute_verdict,
+)
 
 # Column widths
 CODEC_W = 7
 RATE_W = 7
 COVER_W = 5
 TAGS_W = 20
-
-
-def _c(code: int) -> str:
-    return f"\033[38;5;{code}m"
-
-
-def _bold() -> str:
-    return "\033[1m"
-
-
-def _dim() -> str:
-    return "\033[2m"
-
-
-def _rst() -> str:
-    return "\033[0m"
-
-
-def colored(text: str, code: int, *, bold: bool = False, dim: bool = False) -> str:
-    parts = [_c(code)]
-    if bold:
-        parts.append(_bold())
-    if dim:
-        parts.append(_dim())
-    parts.append(text)
-    parts.append(_rst())
-    return "".join(parts)
 
 
 def codec_color(codec: str) -> int:
@@ -141,18 +125,6 @@ def has_cover_art(streams: list[dict[str, Any]]) -> bool:
     return False
 
 
-def get_tag(tags: dict[str, str], *names: str) -> str | None:
-    """Return the first matching tag value, trying each *name* in order (case-insensitive fallback)."""
-    for name in names:
-        if name in tags and tags[name].strip():
-            return tags[name].strip()
-    name_lower = [n.lower() for n in names]
-    for k, v in tags.items():
-        if k.lower() in name_lower and v.strip():
-            return v.strip()
-    return None
-
-
 def fmt_codec(codec: str) -> str:
     """Format a codec name: truncated to CODEC_W, right-justified, coloured."""
     display = codec.upper()[:CODEC_W]
@@ -179,8 +151,8 @@ def fmt_cover(present: bool) -> str:
 def fmt_tags(tags: dict[str, str]) -> str:
     """Build the tags column: show only missing tag names, or a dim '·' when all present."""
     missing = []
-    for label, names in TAG_NAMES:
-        if get_tag(tags, *names) is None:
+    for label, key in TAG_NAMES:
+        if key not in tags:
             missing.append(label)
 
     if not missing:
@@ -226,42 +198,120 @@ def collect_files(paths: list[str]) -> list[tuple[Path, str]]:
     return result
 
 
-def _process_file(args: tuple[Path, str]) -> str | None:
-    fp, display_path = args
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds to m:ss or h:mm:ss."""
+    s = int(seconds)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format a file size in human-readable form."""
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def _print_file_detail(
+    fp: Path,
+    display_path: str,
+    *,
+    brickwall_threshold: float,
+    low_energy_threshold: float,
+    no_hf_threshold: float,
+) -> None:
+    """Print a detailed single-file breakdown."""
     data = probe(fp)
     if data is None:
-        return None
+        print(f"error: could not probe {display_path}", file=sys.stderr)
+        sys.exit(1)
 
     streams = data.get("streams", [])
     fmt = data.get("format", {})
-    tags = fmt.get("tags", {})
 
     audio = find_audio_stream(streams)
     if audio is None:
-        return None
+        print(f"error: no audio stream found in {display_path}", file=sys.stderr)
+        sys.exit(1)
 
     codec = audio.get("codec_name", "?")
     bitrate_str = audio.get("bit_rate") or fmt.get("bit_rate")
     bitrate = int(bitrate_str) if bitrate_str else None
     cover = has_cover_art(streams)
-
     sample_rate_str = audio.get("sample_rate")
     sample_rate = int(sample_rate_str) if sample_rate_str else None
-    verdict_text, verdict_color, verdict_dim = compute_verdict(codec, fp, sample_rate)
+    bit_depth = audio.get("bits_per_raw_sample") or audio.get("bits_per_sample")
+    channels = audio.get("channels")
+    duration_s = float(fmt.get("duration", 0))
+    file_size = fp.stat().st_size
+    channel_map = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
 
-    return (
-        f"  {fmt_codec(codec)}  {fmt_bitrate(bitrate, codec)}  "
-        f"{fmt_verdict(verdict_text, verdict_color, dim=verdict_dim)}  "
-        f"{fmt_cover(cover)}  "
-        f"{fmt_tags(tags)}  "
-        f"{colored(display_path, 51)}"
+    verdict_text, verdict_color, verdict_dim = compute_verdict(
+        codec,
+        fp,
+        sample_rate,
+        brickwall_threshold=brickwall_threshold,
+        low_energy_threshold=low_energy_threshold,
+        no_hf_threshold=no_hf_threshold,
     )
+
+    sep = colored("  " + "─" * 60, 240)
+
+    print()
+    print(f"  {bold('File:')}     {display_path}")
+    print(f"  {bold('Size:')}     {_format_size(file_size)}")
+    print(f"  {bold('Duration:')} {_format_duration(duration_s)}")
+    print(sep)
+
+    print(f"  {bold('Codec:')}    {colored(codec.upper(), codec_color(codec), bold=True)}")
+    if bitrate:
+        print(f"  {bold('Bitrate:')}  {bitrate // 1000}k")
+    print(
+        f"  {bold('Sample:')}   {sample_rate or '?'} Hz, {bit_depth or '?'} bit, {channel_map.get(channels, f'{channels}ch') if channels else '?'}"
+    )
+    print(f"  {bold('Cover:')}    {'yes' if cover else 'no'}")
+    print(f"  {bold('Verdict:')}  {colored(verdict_text, verdict_color, bold=not verdict_dim, dim=verdict_dim)}")
+    print(sep)
+
+    tags = read_tags(str(fp))
+    if tags:
+        label_w = max((len(k) for k in tags), default=0)
+        print(f"  {bold('Tags:')}")
+        for key in sorted(tags.keys()):
+            print(f"    {colored(key, GREEN):<{label_w + 13}s} {tags[key]}")
+    else:
+        print(f"  {bold('Tags:')}    (none)")
+    print(sep)
+
+    print(f"  {bold('Streams:')}")
+    for i, s in enumerate(streams, 1):
+        stype = s.get("codec_type", "?")
+        sname = s.get("codec_name", "?")
+        srate = s.get("sample_rate", "?")
+        sch = s.get("channels", "?")
+        sbits = s.get("bits_per_raw_sample") or s.get("bits_per_sample") or "?"
+        disp = s.get("disposition", {})
+        note = ""
+        if disp.get("attached_pic"):
+            note = " (cover art)"
+        elif stype == "video" and sname in {"mjpeg", "png", "bmp", "gif"}:
+            note = " (embedded image)"
+        print(
+            f"    #{i}  {stype:<6s} {sname:<8s} {srate} Hz  {channel_map.get(sch, f'{sch}ch') if isinstance(sch, int) else str(sch)}  {sbits}b{note}"
+        )
 
 
 def main() -> None:
     p = argparse.ArgumentParser(
         description="Walk directories for audio files and report codec, "
-        "bitrate, cover art, missing tags, and a lossy-transcode verdict.",
+        "bitrate, cover art, missing tags, and a lossy-transcode verdict. "
+        "Given a single file, prints a detailed breakdown.",
     )
     p.add_argument(
         "-j",
@@ -269,6 +319,24 @@ def main() -> None:
         type=int,
         default=os.cpu_count() or 4,
         help="number of parallel workers (default: cpu count)",
+    )
+    p.add_argument(
+        "--brickwall-threshold",
+        type=float,
+        default=BRICKWALL_DROP_DB,
+        help=f"min dB drop between adjacent HF bands to flag a brickwall (default: {BRICKWALL_DROP_DB})",
+    )
+    p.add_argument(
+        "--low-energy-db",
+        type=float,
+        default=LOW_ENERGY_DB,
+        help=f"overall RMS below this is too quiet to analyse (default: {LOW_ENERGY_DB})",
+    )
+    p.add_argument(
+        "--no-hf-db",
+        type=float,
+        default=NO_HF_DB,
+        help=f"RMS in 15 kHz band below this = no HF content (default: {NO_HF_DB})",
     )
     p.add_argument(
         "paths",
@@ -289,10 +357,21 @@ def main() -> None:
         print("error: ffprobe not found. Install ffmpeg.", file=sys.stderr)
         sys.exit(1)
 
+    verdict_kwargs = {
+        "brickwall_threshold": args.brickwall_threshold,
+        "low_energy_threshold": args.low_energy_db,
+        "no_hf_threshold": args.no_hf_db,
+    }
+
     files = collect_files(args.paths)
 
     if not files:
         print("No audio files found.")
+        return
+
+    # Single file (not a directory) → detailed view
+    if len(files) == 1 and len(args.paths) == 1 and Path(args.paths[0]).is_file():
+        _print_file_detail(files[0][0], files[0][1], **verdict_kwargs)
         return
 
     header = (
@@ -302,7 +381,39 @@ def main() -> None:
     print(colored(header, 15, bold=True))
     print(colored("  " + "─" * (len(header) - 2), 240))
 
+    def _process_one(fp_display: tuple[Path, str]) -> str | None:
+        fp, display_path = fp_display
+        data = probe(fp)
+        if data is None:
+            return None
+
+        streams = data.get("streams", [])
+        fmt = data.get("format", {})
+
+        audio = find_audio_stream(streams)
+        if audio is None:
+            return None
+
+        codec = audio.get("codec_name", "?")
+        bitrate_str = audio.get("bit_rate") or fmt.get("bit_rate")
+        bitrate = int(bitrate_str) if bitrate_str else None
+        cover = has_cover_art(streams)
+
+        sample_rate_str = audio.get("sample_rate")
+        sample_rate = int(sample_rate_str) if sample_rate_str else None
+        verdict_text, verdict_color, verdict_dim = compute_verdict(codec, fp, sample_rate, **verdict_kwargs)
+
+        tags = read_tags(str(fp))
+
+        return (
+            f"  {fmt_codec(codec)}  {fmt_bitrate(bitrate, codec)}  "
+            f"{fmt_verdict(verdict_text, verdict_color, dim=verdict_dim)}  "
+            f"{fmt_cover(cover)}  "
+            f"{fmt_tags(tags)}  "
+            f"{colored(display_path, 51)}"
+        )
+
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        for line in ex.map(_process_file, files):
+        for line in ex.map(_process_one, files):
             if line is not None:
                 print(line)
