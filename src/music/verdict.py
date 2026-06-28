@@ -30,8 +30,9 @@ Design decisions:
   single adjacent band pair; a natural roll-off distributes the drop evenly.
 - **Fixed analysis frequencies** — Codified in BRICKWALL_DROP_DB / LOW_ENERGY_DB
   / NO_HF_DB so the thresholds are easy to tune after field experience.
-- **First 60 seconds only (-t 60)** — Keeps scans fast; the spectral signature
-  is consistent across a track.
+- **Middle 60 seconds** — Seeks to the file midpoint and scans 60 s.
+  The middle is most representative — it avoids intro silence and fade-outs
+  while keeping scans fast.
 - **Hi-res check is separate** — 88.2/96/192 kHz files with no energy above
   25 kHz are flagged as upsampled, not as lossy transcodes.
 
@@ -67,14 +68,15 @@ HI_RES_HP_FREQ = 25000
 NUM_BANDS = len(HP_FREQS) + 1  # +1 for unfiltered overall
 
 
-def analyze_steepness(filepath: Path, sample_rate: int) -> dict[str, float] | None:
+def analyze_steepness(filepath: Path, sample_rate: int, duration_s: float | None = None) -> dict[str, float] | None:
     """Run the multi-point HF steepness test (see module docs for methodology).
 
     Uses a single ffmpeg call with asplit=N so the file is decoded once.
-    Returns {'rms_overall', 'rms_peak_overall', 'rms_peak_15000',
-             'rms_peak_17000', 'rms_peak_19000', 'rms_peak_20500',
-             'rms_peak_21500'} in dB, plus 'rms_peak_25000' for hi-res
-    material, or None on failure.
+    If *duration_s* is given and the file is longer than 60 s, seeks to the
+    midpoint and scans 60 s.  Returns {'rms_overall', 'rms_peak_overall',
+    'rms_peak_15000', 'rms_peak_17000', 'rms_peak_19000', 'rms_peak_20500',
+    'rms_peak_21500'} in dB, plus 'rms_peak_25000' for hi-res material, or
+    None on failure.
     """
     if sample_rate < 44100:
         return None
@@ -95,16 +97,24 @@ def analyze_steepness(filepath: Path, sample_rate: int) -> dict[str, float] | No
 
     filter_graph = f"asplit={num_bands}{splits};" + ";".join(chains)
 
+    # Seek to the middle of the file for a representative 60 s sample.
+    # When duration is unknown or the file is short, scan the whole file.
+    seek_args: list[str] = []
+    time_args: list[str] = []
+    if duration_s is not None and duration_s > 60:
+        seek_args = ["-ss", str(duration_s / 2 - 30)]
+        time_args = ["-t", "60"]
+
     try:
         result = subprocess.run(
             [
                 "ffmpeg",
                 "-v",
                 "info",
-                "-t",
-                "60",
+                *seek_args,
                 "-i",
                 str(filepath),
+                *time_args,
                 "-filter_complex",
                 filter_graph,
                 "-map",
@@ -158,6 +168,7 @@ def compute_verdict(
     filepath: Path,
     sample_rate: int | None,
     *,
+    duration_s: float | None = None,
     brickwall_threshold: float = BRICKWALL_DROP_DB,
     low_energy_threshold: float = LOW_ENERGY_DB,
     no_hf_threshold: float = NO_HF_DB,
@@ -189,14 +200,14 @@ def compute_verdict(
     if sample_rate is None or sample_rate < 44100:
         return ("Inconclusive (Low SR)", GREY, True)
 
-    spec = analyze_steepness(filepath, sample_rate)
+    spec = analyze_steepness(filepath, sample_rate, duration_s)
     if spec is None:
         return ("Error", RED, False)
 
-    rms_overall = spec["rms_overall"]
+    rms_peak_overall = spec["rms_peak_overall"]
     rms_15000 = spec["rms_peak_15000"]
 
-    if rms_overall < low_energy_threshold:
+    if rms_peak_overall < low_energy_threshold:
         return ("Inconclusive (Low Energy)", GREY, True)
 
     if rms_15000 < no_hf_threshold:

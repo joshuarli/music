@@ -1,5 +1,5 @@
 """Walk a directory for audio files and report codec, bitrate, cover art,
-metadata, and a lossy-transcode verdict.
+metadata, lossy-transcode verdict, and EBU R 128 mastering-quality verdicts.
 
 Uses ffprobe and ffmpeg for all analysis — file extensions are ignored for
 codec detection.  Prints one line per file with ANSI 256-color output.
@@ -31,6 +31,12 @@ from .constants import (
     MAGENTA,
     RED,
     TAG_NAMES,
+)
+from .loudness import (
+    LRA_FLAT_LU,
+    TRUE_PEAK_LIMIT_DBTP,
+    analyze_ebur128,
+    compute_mastering_verdict,
 )
 from .tags import read_tags
 from .ui import bold, colored
@@ -227,6 +233,9 @@ def _print_file_detail(
     low_energy_threshold: float,
     no_hf_threshold: float,
     hi_res_no_hf_threshold: float,
+    no_mastering: bool,
+    true_peak_limit: float,
+    lra_flat_limit: float,
 ) -> None:
     """Print a detailed single-file breakdown."""
     data = probe(fp)
@@ -258,6 +267,7 @@ def _print_file_detail(
         codec,
         fp,
         sample_rate,
+        duration_s=duration_s,
         brickwall_threshold=brickwall_threshold,
         low_energy_threshold=low_energy_threshold,
         no_hf_threshold=no_hf_threshold,
@@ -279,6 +289,41 @@ def _print_file_detail(
         f"  {bold('Sample:')}   {sample_rate or '?'} Hz, {bit_depth or '?'} bit, {channel_map.get(channels, f'{channels}ch') if channels else '?'}"
     )
     print(f"  {bold('Cover:')}    {'yes' if cover else 'no'}")
+
+    if not no_mastering:
+        loud_spec = analyze_ebur128(fp, duration_s)
+        if loud_spec:
+            master = compute_mastering_verdict(
+                loud_spec, true_peak_limit=true_peak_limit, lra_flat_limit=lra_flat_limit
+            )
+            # Low LRA is expected in ambient/drone/minimalist music and
+            # lossy codecs already compromise dynamics.
+            if (
+                master
+                and master[0] == "Dynamically Flat"
+                and codec.lower() not in LOSSLESS
+                and codec.lower() not in DSD
+            ):
+                master = None
+            peak_color = RED if loud_spec["true_peak_dbtp"] > true_peak_limit else GREY
+            master_parts = []
+            master_parts.append(colored(f"{loud_spec['integrated_lufs']:+.1f} LUFS", GREY))
+            master_parts.append(
+                colored(f"{loud_spec['lra']:.1f} LU LRA", GREY, bold=bool(master and master[0] == "Dynamically Flat"))
+            )
+            master_parts.append(
+                colored(
+                    f"{loud_spec['true_peak_dbtp']:+.1f} dBTP",
+                    peak_color,
+                    bold=loud_spec["true_peak_dbtp"] > true_peak_limit,
+                )
+            )
+            if master:
+                master_parts.append(colored(master[0], master[1], bold=not master[2], dim=master[2]))
+            print(f"  {bold('Mast:')}  {'  |  '.join(master_parts)}")
+        else:
+            print(f"  {bold('Mast:')}    {colored('(error)', RED)}")
+
     print(f"  {bold('Verdict:')}  {colored(verdict_text, verdict_color, bold=not verdict_dim, dim=verdict_dim)}")
     print(sep)
 
@@ -348,6 +393,23 @@ def main() -> None:
         help=f"RMS above 25 kHz below this = likely upsampled hi-res file (default: {HI_RES_NO_HF_DB})",
     )
     p.add_argument(
+        "--no-mastering",
+        action="store_true",
+        help="skip the EBU R 128 loudness pass (faster, no loudness verdicts)",
+    )
+    p.add_argument(
+        "--true-peak-limit",
+        type=float,
+        default=TRUE_PEAK_LIMIT_DBTP,
+        help=f"true peak above this dBTP is flagged as clipping (default: {TRUE_PEAK_LIMIT_DBTP})",
+    )
+    p.add_argument(
+        "--lra-flat-limit",
+        type=float,
+        default=LRA_FLAT_LU,
+        help=f"LRA below this LU is flagged as dynamically flat (default: {LRA_FLAT_LU})",
+    )
+    p.add_argument(
         "paths",
         nargs="*",
         default=["."],
@@ -372,6 +434,12 @@ def main() -> None:
         "no_hf_threshold": args.no_hf_db,
         "hi_res_no_hf_threshold": args.hi_res_no_hf_db,
     }
+    detail_kwargs = {
+        **verdict_kwargs,
+        "no_mastering": args.no_mastering,
+        "true_peak_limit": args.true_peak_limit,
+        "lra_flat_limit": args.lra_flat_limit,
+    }
 
     files = collect_files(args.paths)
 
@@ -381,7 +449,7 @@ def main() -> None:
 
     # Single file (not a directory) → detailed view
     if len(files) == 1 and len(args.paths) == 1 and Path(args.paths[0]).is_file():
-        _print_file_detail(files[0][0], files[0][1], **verdict_kwargs)
+        _print_file_detail(files[0][0], files[0][1], **detail_kwargs)
         return
 
     header = (
@@ -411,7 +479,51 @@ def main() -> None:
 
         sample_rate_str = audio.get("sample_rate")
         sample_rate = int(sample_rate_str) if sample_rate_str else None
-        verdict_text, verdict_color, verdict_dim = compute_verdict(codec, fp, sample_rate, **verdict_kwargs)
+        duration_str = fmt.get("duration")
+        duration_s = float(duration_str) if duration_str else None
+        brick_text, brick_color, brick_dim = compute_verdict(
+            codec, fp, sample_rate, duration_s=duration_s, **verdict_kwargs
+        )
+
+        findings: list[tuple[str, int, bool]] = []
+        if brick_text == "Suspected Transcode (Lossy)":
+            findings.append((brick_text, brick_color, brick_dim))
+
+        if not args.no_mastering:
+            loud_spec = analyze_ebur128(fp, duration_s)
+            if loud_spec:
+                master = compute_mastering_verdict(
+                    loud_spec, true_peak_limit=args.true_peak_limit, lra_flat_limit=args.lra_flat_limit
+                )
+                if master:
+                    master_text = master[0]
+                    # Low LRA is expected in ambient/drone/minimalist music
+                    # and lossy codecs already compromise dynamics.  Only flag
+                    # it for lossless/DSD where preserved dynamics matter.
+                    if master_text == "Dynamically Flat" and codec.lower() not in LOSSLESS and codec.lower() not in DSD:
+                        pass
+                    else:
+                        findings.append(master)
+
+        if findings:
+            if len(findings) == 1:
+                verdict_text, verdict_color, verdict_dim = findings[0]
+            else:
+                parts = []
+                for text, _, _ in findings:
+                    if text == "Suspected Transcode (Lossy)":
+                        parts.append("Suspected Transcode")
+                    elif text == "True Peak Clipping":
+                        parts.append("Clip")
+                    elif text == "Dynamically Flat":
+                        parts.append("Flat")
+                    else:
+                        parts.append(text)
+                verdict_text = ", ".join(parts)
+                verdict_color = RED
+                verdict_dim = False
+        else:
+            verdict_text, verdict_color, verdict_dim = brick_text, brick_color, brick_dim
 
         tags = read_tags(str(fp))
 
