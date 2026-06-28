@@ -5,6 +5,7 @@ Uses ffprobe and ffmpeg for all analysis — file extensions are ignored for
 codec detection.  Prints one line per file with ANSI 256-color output.
 """
 
+import argparse
 import json
 import os
 import subprocess
@@ -258,26 +259,19 @@ def _process_file(args: tuple[Path, str]) -> str | None:
 
 
 def main() -> None:
-    jobs = os.cpu_count() or 4
-    paths: list[str] = []
-    args = sys.argv[1:]
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in ("-j", "--jobs"):
-            i += 1
-            if i < len(args):
-                jobs = int(args[i])
-        elif a.startswith("-j"):
-            jobs = int(a[2:])
-        elif a.startswith("--jobs="):
-            jobs = int(a.split("=", 1)[1])
-        else:
-            paths.append(a)
-        i += 1
-
-    if not paths:
-        paths = ["."]
+    p = argparse.ArgumentParser(
+        description="Walk directories for audio files and report codec, "
+        "bitrate, cover art, missing tags, and a lossy-transcode verdict.",
+    )
+    p.add_argument(
+        "-j", "--jobs", type=int, default=os.cpu_count() or 4,
+        help="number of parallel workers (default: cpu count)",
+    )
+    p.add_argument(
+        "paths", nargs="*", default=["."],
+        help="directories or files to scan",
+    )
+    args = p.parse_args()
 
     try:
         subprocess.run(
@@ -286,11 +280,11 @@ def main() -> None:
             stderr=subprocess.DEVNULL,
             check=True,
         )
-    except subprocess.CalledProcessError, FileNotFoundError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         print("error: ffprobe not found. Install ffmpeg.", file=sys.stderr)
         sys.exit(1)
 
-    files = collect_files(paths)
+    files = collect_files(args.paths)
 
     if not files:
         print("No audio files found.")
@@ -303,7 +297,7 @@ def main() -> None:
     print(colored(header, 15, bold=True))
     print(colored("  " + "─" * (len(header) - 2), 240))
 
-    with ThreadPoolExecutor(max_workers=jobs) as ex:
+    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
         for line in ex.map(_process_file, files):
             if line is not None:
                 print(line)

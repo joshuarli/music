@@ -1,13 +1,12 @@
 """Fingerprint an audio file and look up its MusicBrainz metadata via AcoustID."""
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 import urllib.parse
 import urllib.request
-
-ACOUSTID_API_KEY = os.environ["ACOUSTID_API_KEY"]
 
 
 def get_audio_fingerprint(file_path):
@@ -33,8 +32,14 @@ def get_audio_fingerprint(file_path):
 
 def fetch_acoustid_metadata(duration, fingerprint):
     """Queries AcoustID API for MusicBrainz recordings and releases."""
+    try:
+        api_key = os.environ["ACOUSTID_API_KEY"]
+    except KeyError:
+        print("error: ACOUSTID_API_KEY not set in environment", file=sys.stderr)
+        sys.exit(1)
+
     params = {
-        "client": ACOUSTID_API_KEY,
+        "client": api_key,
         "duration": int(duration),
         "fingerprint": fingerprint,
         "meta": "recordings releases",
@@ -94,10 +99,16 @@ def print_results(results):
 
 
 def main() -> None:
-    file_path = sys.argv[1]
+    p = argparse.ArgumentParser(
+        description="Fingerprint an audio file with fpcalc and look up its "
+        "MusicBrainz metadata via the AcoustID API. "
+        "Requires ACOUSTID_API_KEY in the environment.",
+    )
+    p.add_argument("file", help="audio file to fingerprint")
+    args = p.parse_args()
 
-    print(f"Analyzing {file_path}...")
-    duration, fingerprint = get_audio_fingerprint(file_path)
+    print(f"Analyzing {args.file}...")
+    duration, fingerprint = get_audio_fingerprint(args.file)
 
     if duration and fingerprint:
         results = fetch_acoustid_metadata(duration, fingerprint)
