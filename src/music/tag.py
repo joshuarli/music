@@ -357,6 +357,7 @@ def main() -> None:
     )
     p.add_argument("file", help="audio file to fingerprint")
     p.add_argument("-y", "--yes", action="store_true", help="skip write confirmation")
+    p.add_argument("-f", "--force", action="store_true", help="re-tag even if metadata is already complete")
     p.add_argument("--read", action="store_true", help="print current tags and exit (no network)")
     args = p.parse_args()
 
@@ -364,6 +365,13 @@ def main() -> None:
         print(f"Tags in {args.file}:")
         _print_tags(args.file)
         return
+
+    current_tags = read_tags(args.file)
+    if not args.force:
+        missing = [k for k in TAG_FIELDS if k not in current_tags]
+        if not missing:
+            print(f"All tags already complete, skipping {args.file}. Use --force to override.")
+            return
 
     print(f"Analyzing {args.file}...")
     duration, fingerprint = get_audio_fingerprint(args.file)
