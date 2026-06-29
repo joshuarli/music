@@ -7,9 +7,11 @@ Also supports a --read mode to inspect existing tags without any network call.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import termios
+import unicodedata
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -119,6 +121,120 @@ def _fetch_musicbrainz(recording_mbid: str) -> dict[str, str]:
             meta["albumartist"] = "".join(a.get("name", "") + a.get("joinphrase", "") for a in ac)
 
     return meta
+
+
+_YT_ID_RE = re.compile(r"\s*\[[A-Za-z0-9_-]{11}\]$")
+_TRACK_NUM_RE = re.compile(r"^\d{1,3}\s*[-–—]\s*")
+
+
+def _normalize_filename(filepath: str) -> str:
+    """Extract a plausible song title from a filename.
+
+    Removes the YouTube ID + extension suffix, leading track number, and
+    replaces fullwidth punctuation with ASCII equivalents.
+    """
+    name = os.path.splitext(os.path.basename(filepath))[0]
+
+    # Remove [youtube-id] suffix if present (before the extension)
+    name = _YT_ID_RE.sub("", name)
+
+    # Remove leading track number (e.g. "09 - ")
+    name = _TRACK_NUM_RE.sub("", name)
+
+    # Normalize fullwidth / confusable punctuation to ASCII
+    name = unicodedata.normalize("NFKC", name)
+
+    # Collapse whitespace
+    name = " ".join(name.split())
+
+    return name.strip()
+
+
+def _search_musicbrainz(query: str) -> list[dict[str, Any]]:
+    """Search MusicBrainz recordings and return results in AcoustID-compatible format."""
+    params = urllib.parse.urlencode({"query": query, "fmt": "json", "limit": "10"})
+    url = f"https://musicbrainz.org/ws/2/recording/?{params}"
+    req = urllib.request.Request(url, headers={"User-Agent": "music-tag/0.1"})
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return []
+
+    recordings = data.get("recordings", [])
+    return [_mb_recording_to_result(r) for r in recordings if r.get("title")]
+
+
+def _mb_recording_to_result(recording: dict[str, Any]) -> dict[str, Any]:
+    """Convert a MusicBrainz search recording to AcoustID result format."""
+    artist_credit = recording.get("artist-credit", [])
+    artists = [{"name": a["name"]} for a in artist_credit if a.get("name")]
+
+    releases = recording.get("releases", [])
+    mb_releases = []
+    for rel in releases:
+        r: dict[str, Any] = {}
+        if rel.get("title"):
+            r["title"] = rel["title"]
+        date = rel.get("date")
+        if date:
+            # MB dates are strings like "2024" or "2024-05"
+            year = date.split("-")[0] if isinstance(date, str) else None
+            if year:
+                r["date"] = {"year": int(year)}
+        if r:
+            mb_releases.append(r)
+
+    score = recording.get("score", 100) / 100.0
+
+    return {
+        "score": score,
+        "recordings": [
+            {
+                "id": recording.get("id"),
+                "title": recording.get("title"),
+                "artists": artists,
+                "releases": mb_releases,
+            }
+        ],
+    }
+
+
+def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[str, Any]]:
+    """Fallback when AcoustID fingerprint lookup returns no matches.
+
+    Strategy:
+    1. Search MusicBrainz using file metadata (title, artist, album).
+    2. Search MusicBrainz using a normalized filename as the song title.
+    """
+    # Strategy 1: metadata from file tags
+    query_parts = []
+    if current_tags.get("title"):
+        query_parts.append(f'recording:({current_tags["title"]})')
+    if current_tags.get("artist"):
+        query_parts.append(f'artist:({current_tags["artist"]})')
+    if current_tags.get("album"):
+        query_parts.append(f'release:({current_tags["album"]})')
+
+    if query_parts:
+        query = " AND ".join(query_parts)
+        print(f"  No fingerprint match. Searching MusicBrainz with file metadata...")
+        results = _search_musicbrainz(query)
+        if results:
+            print(f"  Found {len(results)} result(s) via metadata search.")
+            return results
+
+    # Strategy 2: normalized filename as title (plain query, not phrase-locked)
+    title = _normalize_filename(filepath)
+    if title:
+        print(f"  Searching MusicBrainz for: {title}")
+        results = _search_musicbrainz(title)
+        if results:
+            print(f"  Found {len(results)} result(s) via filename search.")
+            return results
+
+    return []
 
 
 def extract_metadata(result: dict[str, Any]) -> dict[str, str]:
@@ -385,8 +501,10 @@ def main() -> None:
     results = [r for r in results if extract_metadata(r)]
 
     if not results:
-        print("No matches found for this audio fingerprint.")
-        return
+        results = _fallback_search(args.file, current_tags)
+        if not results:
+            print("No matches found for this audio fingerprint.")
+            return
 
     if not sys.stdout.isatty():
         selected_idx = _fallback_select(results)
