@@ -19,6 +19,7 @@ transcode = "music.transcode:main"
 
 [dependency-groups]
 dev = [
+    "joshuarli-pytest-parallel>=0.2.0",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.12",
@@ -34,6 +35,10 @@ include = ["src"]
 [tool.ty.rules]
 all = "error"
 unresolved-import = "ignore"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+minversion = "8"
 
 [tool.ruff]
 target-version = "py314"

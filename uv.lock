@@ -60,6 +60,17 @@ wheels = [
 ]
 
 [[package]]
+name = "joshuarli-pytest-parallel"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/4b/2c3b285fc1eed48c5f7f79719efba4981f5be8d52979fba10981a645c6bd/joshuarli_pytest_parallel-0.2.0-py3-none-any.whl", hash = "sha256:ffc017c83211220ff50326366462322ab04742ea0fecbe1f6efabde9d4d1cb1a", size = 8721, upload-time = "2026-06-29T02:21:03.257Z" },
+]
+
+[[package]]
 name = "music"
 version = "0.1.0"
 source = { editable = "." }
@@ -69,6 +80,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "joshuarli-pytest-parallel" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -80,6 +92,7 @@ requires-dist = [{ name = "mutagen", specifier = ">=1.48.1" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "joshuarli-pytest-parallel", specifier = ">=0.2.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.15.12" },
