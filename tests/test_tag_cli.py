@@ -6,54 +6,11 @@ import pytest
 from music.tag import (
     _fallback_search,
     _fallback_select,
-    _fetch_musicbrainz,
-    _mb_recording_to_result,
     _normalize_filename,
     _print_tags,
-    _search_musicbrainz,
-    extract_metadata,
     format_diff,
     format_match_line,
-    get_audio_fingerprint,
 )
-
-
-class TestExtractMetadata:
-    def test_full_record(self):
-        result = {
-            "recordings": [
-                {
-                    "title": "Song Title",
-                    "artists": [{"name": "Artist One"}, {"name": "Artist Two"}],
-                    "releases": [
-                        {
-                            "title": "Album Name",
-                            "date": {"year": 2024},
-                        }
-                    ],
-                }
-            ]
-        }
-        meta = extract_metadata(result)
-        assert meta["title"] == "Song Title"
-        assert meta["artist"] == "Artist One, Artist Two"
-        assert meta["album"] == "Album Name"
-        assert meta["date"] == "2024"
-
-    def test_no_recordings(self):
-        assert extract_metadata({}) == {}
-        assert extract_metadata({"recordings": []}) == {}
-
-    def test_minimal_record(self):
-        result = {"recordings": [{"title": "Just Title"}]}
-        meta = extract_metadata(result)
-        assert meta == {"title": "Just Title"}
-
-    def test_artist_no_name(self):
-        result = {"recordings": [{"artists": [{"role": "composer"}]}]}
-        meta = extract_metadata(result)
-        # artist key is present but empty — names are filtered by a.get("name")
-        assert meta["artist"] == ""
 
 
 class TestFormatMatchLine:
@@ -112,144 +69,6 @@ class TestFormatDiff:
         lines = format_diff(current, new)
         assert len(lines) == 4
         # title changed (2 lines), album added (2 lines), artist unchanged
-
-
-class TestFetchAcoustidMetadata:
-    def test_success(self, monkeypatch):
-        monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        api_response = json.dumps({"status": "ok", "results": [{"score": 0.95}]})
-
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = api_response.encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            from music.tag import fetch_acoustid_metadata
-
-            results = fetch_acoustid_metadata(200.0, "fp123")
-            assert results == [{"score": 0.95}]
-
-    def test_no_api_key(self, monkeypatch):
-        monkeypatch.delenv("ACOUSTID_API_KEY", raising=False)
-        with pytest.raises(SystemExit):
-            from music.tag import fetch_acoustid_metadata
-
-            fetch_acoustid_metadata(200.0, "fp123")
-
-    def test_api_error_status(self, monkeypatch):
-        monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        api_response = json.dumps({"status": "error", "error": {"message": "Bad fingerprint"}})
-
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = api_response.encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            from music.tag import fetch_acoustid_metadata
-
-            results = fetch_acoustid_metadata(200.0, "fp123")
-            assert results is None
-
-    def test_http_error(self, monkeypatch):
-        monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 500
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            from music.tag import fetch_acoustid_metadata
-
-            results = fetch_acoustid_metadata(200.0, "fp123")
-            assert results is None
-
-
-class TestGetAudioFingerprint:
-    def test_success(self):
-        stdout = json.dumps({"duration": 200.5, "fingerprint": "abc123"})
-        with patch("subprocess.run") as mock_run:
-            mock_result = MagicMock()
-            mock_result.stdout = stdout
-            mock_run.return_value = mock_result
-
-            duration, fp = get_audio_fingerprint("test.flac")
-            assert duration == 200.5
-            assert fp == "abc123"
-
-    def test_fpcalc_not_found(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError), pytest.raises(SystemExit):
-            get_audio_fingerprint("test.flac")
-
-    def test_fpcalc_error(self):
-        import subprocess
-
-        err = subprocess.CalledProcessError(1, "fpcalc")
-        err.stderr = "fpcalc error message"
-        with patch("subprocess.run", side_effect=err), pytest.raises(SystemExit):
-            get_audio_fingerprint("test.flac")
-
-    def test_fpcalc_json_error(self):
-        with patch("subprocess.run") as mock_run:
-            mock_result = MagicMock()
-            mock_result.stdout = "not valid json"
-            mock_run.return_value = mock_result
-            with pytest.raises(SystemExit):
-                get_audio_fingerprint("test.flac")
-
-
-class TestFetchMusicBrainz:
-    def test_returns_genre_and_track(self):
-        mb_json = {
-            "genres": [
-                {"name": "Rock", "count": 100},
-                {"name": "Alternative", "count": 50},
-                {"name": "Indie", "count": 30},
-                {"name": "Pop", "count": 10},
-            ],
-            "releases": [
-                {
-                    "media": [
-                        {
-                            "tracks": [
-                                {"number": "5", "recording": {"id": "rec-id"}},
-                                {"number": "6", "recording": {"id": "other"}},
-                            ]
-                        }
-                    ],
-                    "artist-credit": [{"name": "Album Artist", "joinphrase": ""}],
-                }
-            ],
-        }
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_json).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            meta = _fetch_musicbrainz("rec-id")
-            assert meta["genre"] == "Rock, Alternative, Indie"
-            assert meta["tracknumber"] == "5"
-            assert meta["albumartist"] == "Album Artist"
-
-    def test_handles_http_error(self):
-        with patch("urllib.request.urlopen", side_effect=Exception):
-            meta = _fetch_musicbrainz("rec-id")
-            assert meta == {}
-
-    def test_no_genres(self):
-        mb_json = {"releases": []}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_json).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            meta = _fetch_musicbrainz("rec-id")
-            assert "genre" not in meta
 
 
 class TestFallbackSelect:
@@ -322,96 +141,6 @@ class TestNormalizeFilename:
         assert result == "My Song"
 
 
-class TestMbRecordingToResult:
-    def test_full_recording(self):
-        mb_rec = {
-            "id": "abc-123",
-            "title": "Test Song",
-            "score": 95,
-            "artist-credit": [
-                {"name": "Artist One", "joinphrase": " & "},
-                {"name": "Artist Two", "joinphrase": ""},
-            ],
-            "releases": [
-                {"title": "Test Album", "date": "2024"},
-                {"title": "Other Album", "date": "2023-05"},
-            ],
-        }
-        result = _mb_recording_to_result(mb_rec)
-        assert result["score"] == 0.95
-        rec = result["recordings"][0]
-        assert rec["id"] == "abc-123"
-        assert rec["title"] == "Test Song"
-        assert rec["artists"] == [{"name": "Artist One"}, {"name": "Artist Two"}]
-        assert rec["releases"] == [
-            {"title": "Test Album", "date": {"year": 2024}},
-            {"title": "Other Album", "date": {"year": 2023}},
-        ]
-
-    def test_minimal_recording(self):
-        mb_rec = {"id": "xyz", "title": "Minimal"}
-        result = _mb_recording_to_result(mb_rec)
-        assert result["score"] == 1.0  # default score when not provided
-        rec = result["recordings"][0]
-        assert rec["title"] == "Minimal"
-        assert rec["artists"] == []
-        assert rec["releases"] == []
-
-    def test_release_without_date(self):
-        mb_rec = {
-            "id": "abc",
-            "title": "Song",
-            "releases": [{"title": "Album"}],
-        }
-        result = _mb_recording_to_result(mb_rec)
-        assert result["recordings"][0]["releases"] == [{"title": "Album"}]
-
-    def test_release_with_date_only(self):
-        mb_rec = {
-            "id": "abc",
-            "title": "Song",
-            "releases": [{"date": "2024"}],
-        }
-        result = _mb_recording_to_result(mb_rec)
-        # Release with only a date is kept (the date is useful metadata)
-        assert result["recordings"][0]["releases"] == [{"date": {"year": 2024}}]
-
-
-class TestSearchMusicBrainz:
-    def test_returns_results(self):
-        mb_response = {
-            "recordings": [
-                {"id": "rec-1", "title": "Song A", "score": 90},
-                {"id": "rec-2", "title": "Song B", "score": 80},
-            ]
-        }
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_response).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            results = _search_musicbrainz('recording:"Test"')
-            assert len(results) == 2
-            assert results[0]["recordings"][0]["title"] == "Song A"
-
-    def test_handles_network_error(self):
-        with patch("urllib.request.urlopen", side_effect=Exception):
-            results = _search_musicbrainz('recording:"Test"')
-            assert results == []
-
-    def test_empty_response(self):
-        mb_response = {"recordings": []}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_response).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            results = _search_musicbrainz('recording:"Nonexistent"')
-            assert results == []
-
-
 class TestFallbackSearch:
     def test_metadata_search_succeeds(self):
         """When file has metadata, searches MusicBrainz with recording + artist."""
@@ -432,7 +161,6 @@ class TestFallbackSearch:
 
     def test_falls_back_to_filename(self):
         """When metadata search returns nothing, tries normalized filename."""
-        # First call (metadata search) returns empty, second (filename) returns results
         call_count = [0]
 
         def side_effect(req):

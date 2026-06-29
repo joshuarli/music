@@ -5,122 +5,17 @@ Also supports a --read mode to inspect existing tags without any network call.
 """
 
 import argparse
-import json
 import os
 import re
-import subprocess
 import sys
 import unicodedata
-import urllib.parse
-import urllib.request
 from typing import Any
 
+from .api.acoustid import extract_metadata, fetch_acoustid_metadata, get_audio_fingerprint
+from .api.musicbrainz import fetch_recording
+from .api.musicbrainz import search as mb_search
 from .tags import TAG_FIELDS, read_tags, write_tags
 from .ui import bold, colored, dim, select_interactive
-
-
-def get_audio_fingerprint(file_path):
-    try:
-        result = subprocess.run(
-            ["fpcalc", "-json", file_path],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        data = json.loads(result.stdout)
-        return data.get("duration"), data.get("fingerprint")
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing fpcalc: {e.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-        print("Error: 'fpcalc' binary not found. Please install chromaprint.", file=sys.stderr)
-        sys.exit(1)
-    except json.JSONDecodeError:
-        print("Error: Failed to parse JSON from fpcalc output.", file=sys.stderr)
-        sys.exit(1)
-
-
-def fetch_acoustid_metadata(duration, fingerprint):
-    """Queries AcoustID API for MusicBrainz recordings and releases."""
-    try:
-        api_key = os.environ["ACOUSTID_API_KEY"]
-    except KeyError:
-        print("error: ACOUSTID_API_KEY not set in environment", file=sys.stderr)
-        sys.exit(1)
-
-    params = {
-        "client": api_key,
-        "duration": int(duration),
-        "fingerprint": fingerprint,
-        "meta": "recordings releases tracks",
-    }
-
-    url = f"https://api.acoustid.org/v2/lookup?{urllib.parse.urlencode(params)}"
-
-    try:
-        with urllib.request.urlopen(url) as response:
-            if response.status != 200:
-                print(f"API HTTP Error: {response.status}", file=sys.stderr)
-                return None
-
-            res_data = json.loads(response.read().decode("utf-8"))
-
-            if res_data.get("status") != "ok":
-                error_msg = res_data.get("error", {}).get("message", "Unknown API error")
-                print(f"AcoustID API Error: {error_msg}", file=sys.stderr)
-                return None
-
-            return res_data.get("results", [])
-
-    except Exception as e:
-        print(f"Network or parsing error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _fetch_musicbrainz(recording_mbid: str) -> dict[str, str]:
-    """Query MusicBrainz API for track number, genre, and album artist.
-
-    Returns a dict with only the keys that could be extracted.
-    """
-    meta: dict[str, str] = {}
-    url = f"https://musicbrainz.org/ws/2/recording/{recording_mbid}?inc=genres+artists+releases&fmt=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "music-tag/0.1"})
-
-    try:
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception:
-        return meta
-
-    # Genre — take top 3 by count
-    genres = data.get("genres", [])
-    if genres:
-        top = sorted(genres, key=lambda g: g.get("count", 0), reverse=True)
-        meta["genre"] = ", ".join(g["name"] for g in top[:3] if g.get("name"))
-
-    # Track number — search releases for a track whose recording ID matches
-    releases = data.get("releases", [])
-    for rel in releases:
-        for medium in rel.get("media", []):
-            for track in medium.get("tracks", []):
-                if track.get("recording", {}).get("id") == recording_mbid:
-                    tn = track.get("number")
-                    if tn:
-                        meta["tracknumber"] = str(tn)
-                    break
-            if "tracknumber" in meta:
-                break
-        if "tracknumber" in meta:
-            break
-
-    # Album artist — from the first release's artist-credit
-    if releases:
-        ac = releases[0].get("artist-credit", [])
-        if ac:
-            meta["albumartist"] = "".join(a.get("name", "") + a.get("joinphrase", "") for a in ac)
-
-    return meta
-
 
 _YT_ID_RE = re.compile(r"\s*\[[A-Za-z0-9_-]{11}\]$")
 _TRACK_NUM_RE = re.compile(r"^\d{1,3}\s*[-–—]\s*")
@@ -149,57 +44,6 @@ def _normalize_filename(filepath: str) -> str:
     return name.strip()
 
 
-def _search_musicbrainz(query: str) -> list[dict[str, Any]]:
-    """Search MusicBrainz recordings and return results in AcoustID-compatible format."""
-    params = urllib.parse.urlencode({"query": query, "fmt": "json", "limit": "10"})
-    url = f"https://musicbrainz.org/ws/2/recording/?{params}"
-    req = urllib.request.Request(url, headers={"User-Agent": "music-tag/0.1"})
-
-    try:
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception:
-        return []
-
-    recordings = data.get("recordings", [])
-    return [_mb_recording_to_result(r) for r in recordings if r.get("title")]
-
-
-def _mb_recording_to_result(recording: dict[str, Any]) -> dict[str, Any]:
-    """Convert a MusicBrainz search recording to AcoustID result format."""
-    artist_credit = recording.get("artist-credit", [])
-    artists = [{"name": a["name"]} for a in artist_credit if a.get("name")]
-
-    releases = recording.get("releases", [])
-    mb_releases = []
-    for rel in releases:
-        r: dict[str, Any] = {}
-        if rel.get("title"):
-            r["title"] = rel["title"]
-        date = rel.get("date")
-        if date:
-            # MB dates are strings like "2024" or "2024-05"
-            year = date.split("-")[0] if isinstance(date, str) else None
-            if year:
-                r["date"] = {"year": int(year)}
-        if r:
-            mb_releases.append(r)
-
-    score = recording.get("score", 100) / 100.0
-
-    return {
-        "score": score,
-        "recordings": [
-            {
-                "id": recording.get("id"),
-                "title": recording.get("title"),
-                "artists": artists,
-                "releases": mb_releases,
-            }
-        ],
-    }
-
-
 def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[str, Any]]:
     """Fallback when AcoustID fingerprint lookup returns no matches.
 
@@ -219,7 +63,7 @@ def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[s
     if query_parts:
         query = " AND ".join(query_parts)
         print("  No fingerprint match. Searching MusicBrainz with file metadata...")
-        results = _search_musicbrainz(query)
+        results = mb_search(query)
         if results:
             print(f"  Found {len(results)} result(s) via metadata search.")
             return results
@@ -228,60 +72,12 @@ def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[s
     title = _normalize_filename(filepath)
     if title:
         print(f"  Searching MusicBrainz for: {title}")
-        results = _search_musicbrainz(title)
+        results = mb_search(title)
         if results:
             print(f"  Found {len(results)} result(s) via filename search.")
             return results
 
     return []
-
-
-def extract_metadata(result: dict[str, Any]) -> dict[str, str]:
-    """Pull title, artist, album, date, track number from one AcoustID result.
-
-    Returns a dict with only the keys that could be extracted.
-    """
-    meta: dict[str, str] = {}
-    recordings = result.get("recordings")
-    if not recordings:
-        return meta
-
-    rec = recordings[0]
-    rec_id = rec.get("id")
-
-    if "title" in rec:
-        meta["title"] = rec["title"]
-
-    artists = rec.get("artists")
-    if artists:
-        meta["artist"] = ", ".join(a["name"] for a in artists if a.get("name"))
-
-    releases = rec.get("releases")
-    if releases:
-        rel = releases[0]
-        if "title" in rel:
-            meta["album"] = rel["title"]
-        date = rel.get("date", {})
-        year = date.get("year") if isinstance(date, dict) else None
-        if year:
-            meta["date"] = str(year)
-
-        # Track number — search media within releases for a track matching this recording
-        if rec_id:
-            for rel in releases:
-                for medium in rel.get("media", []):
-                    for track in medium.get("tracks", []):
-                        if track.get("id") == rec_id:
-                            tn = track.get("position")
-                            if tn:
-                                meta["tracknumber"] = str(tn)
-                            break
-                    if "tracknumber" in meta:
-                        break
-                if "tracknumber" in meta:
-                    break
-
-    return meta
 
 
 def format_match_line(idx: int, result: dict[str, Any]) -> str:
@@ -457,7 +253,7 @@ def main() -> None:
     if recordings:
         mbid = recordings[0].get("id")
         if mbid:
-            mb_meta = _fetch_musicbrainz(mbid)
+            mb_meta = fetch_recording(mbid)
             metadata.update(mb_meta)
 
     current_tags = read_tags(args.file)

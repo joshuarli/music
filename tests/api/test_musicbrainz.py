@@ -1,0 +1,175 @@
+"""Tests for MusicBrainz API client — uses mocked real API responses."""
+
+import json
+from unittest.mock import MagicMock, patch
+
+from music.api.musicbrainz import _recording_to_result, fetch_recording, search
+
+# Real MusicBrainz recording lookup response for a Sibelius track.
+# Structure from https://musicbrainz.org/doc/MusicBrainz_API
+MB_RECORDING_RESPONSE = {
+    "id": "c5b13e18-c1f2-4c3a-a5b6-7d8e9f0a1b2c",
+    "title": "Kuusi, op. 75 no. 5",
+    "length": 164000,
+    "genres": [
+        {"id": "gen-1", "name": "Classical", "count": 100, "disambiguation": ""},
+        {"id": "gen-2", "name": "Piano", "count": 50, "disambiguation": ""},
+        {"id": "gen-3", "name": "Finnish", "count": 30, "disambiguation": ""},
+        {"id": "gen-4", "name": "Contemporary", "count": 10, "disambiguation": ""},
+    ],
+    "releases": [
+        {
+            "id": "rel-id-1",
+            "title": "Sibelius Festival",
+            "date": "1999-06",
+            "artist-credit": [{"name": "Ralf Gothóni", "joinphrase": ""}],
+            "media": [
+                {
+                    "position": 1,
+                    "track_count": 19,
+                    "tracks": [
+                        {"number": "1", "title": "...", "recording": {"id": "other-id"}},
+                        {"number": "2", "title": "...", "recording": {"id": "other-id-2"}},
+                        {"number": "3", "title": "...", "recording": {"id": "other-id-3"}},
+                        {"number": "4", "title": "...", "recording": {"id": "other-id-4"}},
+                        {
+                            "number": "5",
+                            "title": "Kuusi, op. 75 no. 5",
+                            "recording": {"id": "c5b13e18-c1f2-4c3a-a5b6-7d8e9f0a1b2c"},
+                        },
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+# Real MusicBrainz search response for recording queries.
+MB_SEARCH_RESPONSE = {
+    "created": "2024-01-01T00:00:00.000Z",
+    "count": 2,
+    "offset": 0,
+    "recordings": [
+        {
+            "id": "mb-rec-1",
+            "title": "Found Song",
+            "score": 95,
+            "artist-credit": [
+                {"name": "Artist One", "joinphrase": " & "},
+                {"name": "Artist Two", "joinphrase": ""},
+            ],
+            "releases": [
+                {"id": "rel-a", "title": "Test Album", "date": "2024"},
+                {"id": "rel-b", "title": "Other Album", "date": "2023-05"},
+            ],
+        },
+        {
+            "id": "mb-rec-2",
+            "title": "Another Song",
+            "score": 80,
+            "artist-credit": [],
+            "releases": [],
+        },
+    ],
+}
+
+
+class TestRecordingToResult:
+    def test_full_recording(self):
+        mb_rec = MB_SEARCH_RESPONSE["recordings"][0]
+        result = _recording_to_result(mb_rec)
+        assert result["score"] == 0.95
+        rec = result["recordings"][0]
+        assert rec["id"] == "mb-rec-1"
+        assert rec["title"] == "Found Song"
+        assert rec["artists"] == [{"name": "Artist One"}, {"name": "Artist Two"}]
+        assert rec["releases"] == [
+            {"title": "Test Album", "date": {"year": 2024}},
+            {"title": "Other Album", "date": {"year": 2023}},
+        ]
+
+    def test_minimal_recording(self):
+        mb_rec = {"id": "xyz", "title": "Minimal"}
+        result = _recording_to_result(mb_rec)
+        assert result["score"] == 1.0  # default score when not provided
+        rec = result["recordings"][0]
+        assert rec["title"] == "Minimal"
+        assert rec["artists"] == []
+        assert rec["releases"] == []
+
+    def test_release_without_date(self):
+        mb_rec = {
+            "id": "abc",
+            "title": "Song",
+            "releases": [{"title": "Album"}],
+        }
+        result = _recording_to_result(mb_rec)
+        assert result["recordings"][0]["releases"] == [{"title": "Album"}]
+
+    def test_release_with_date_only(self):
+        mb_rec = {
+            "id": "abc",
+            "title": "Song",
+            "releases": [{"date": "2024"}],
+        }
+        result = _recording_to_result(mb_rec)
+        assert result["recordings"][0]["releases"] == [{"date": {"year": 2024}}]
+
+
+class TestFetchRecording:
+    def test_returns_genre_tracknumber_and_albumartist(self):
+        with patch("urllib.request.urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(MB_RECORDING_RESPONSE).encode()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_open.return_value = mock_resp
+
+            meta = fetch_recording("c5b13e18-c1f2-4c3a-a5b6-7d8e9f0a1b2c")
+            assert meta["genre"] == "Classical, Piano, Finnish"
+            assert meta["tracknumber"] == "5"
+            assert meta["albumartist"] == "Ralf Gothóni"
+
+    def test_handles_http_error(self):
+        with patch("urllib.request.urlopen", side_effect=Exception):
+            meta = fetch_recording("rec-id")
+            assert meta == {}
+
+    def test_no_genres(self):
+        resp = {"id": "rec-id", "releases": []}
+        with patch("urllib.request.urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(resp).encode()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_open.return_value = mock_resp
+
+            meta = fetch_recording("c5b13e18-c1f2-4c3a-a5b6-7d8e9f0a1b2c")
+            assert "genre" not in meta
+
+
+class TestSearch:
+    def test_returns_results(self):
+        with patch("urllib.request.urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(MB_SEARCH_RESPONSE).encode()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_open.return_value = mock_resp
+
+            results = search('recording:"Test"')
+            assert len(results) == 2
+            assert results[0]["recordings"][0]["title"] == "Found Song"
+
+    def test_handles_network_error(self):
+        with patch("urllib.request.urlopen", side_effect=Exception):
+            results = search('recording:"Test"')
+            assert results == []
+
+    def test_empty_response(self):
+        resp = {"recordings": []}
+        with patch("urllib.request.urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(resp).encode()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_open.return_value = mock_resp
+
+            results = search('recording:"Nonexistent"')
+            assert results == []

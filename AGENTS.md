@@ -67,14 +67,18 @@ They share:
 
 ```
 src/music/
-├── __init__.py    # empty
-├── constants.py   # mutagen type tiers, ffprobe codec sets, colours, tag names
-├── tags.py        # mutagen tag read/write (shared I/O)
-├── transcode.py   # ffmpeg audio transcode (probe codec, opus/vorbis → AAC/M4A)
-├── verdict.py     # multi-point spectral brickwall detector
-├── ui.py          # ANSI 256-color terminal formatting (colored, bold, dim)
-├── scan.py        # probe, format, collect, main() entry point
-└── tag.py         # AcoustID fingerprint → MusicBrainz lookup → mutagen write
+├── __init__.py      # empty
+├── constants.py     # mutagen type tiers, ffprobe codec sets, colours, tag names
+├── tags.py          # mutagen tag read/write (shared I/O)
+├── transcode.py     # ffmpeg audio transcode (probe codec, opus/vorbis → AAC/M4A)
+├── verdict.py       # multi-point spectral brickwall detector
+├── ui.py            # ANSI 256-color terminal formatting (colored, bold, dim)
+├── scan.py          # probe, format, collect, main() entry point
+├── tag.py           # CLI orchestrator: fpcalc → AcoustID → MB → mutagen write
+└── api/
+    ├── __init__.py  # empty
+    ├── acoustid.py  # fpcalc fingerprinting + AcoustID API lookup + result parsing
+    └── musicbrainz.py  # MusicBrainz search + recording lookup
 ```
 
 | Module | Purpose |
@@ -85,8 +89,9 @@ src/music/
 | `verdict.py` | Lossy-transcode detection via multi-point spectral slope profile. Module docstring is the canonical methodology reference. Exports `compute_verdict(codec, filepath, sample_rate, **thresholds)` → `(text, color, dim)`. One ffmpeg call per file (`asplit=N` in a `filter_complex` graph with FIR energy-above-frequency bands at 15/17/19/20.5/21.5 kHz, plus 25 kHz for hi-res files). Thresholds are module-level constants (`BRICKWALL_DROP_DB`, `LOW_ENERGY_DB`, `NO_HF_DB`, `HI_RES_NO_HF_DB`), overridable via kwargs and CLI flags. |
 | `ui.py` | Shared ANSI formatting: `colored(text, code, bold, dim)`, `bold(text)`, `dim(text)`, `cursor_up(n)`, `clear_line()`, `clear_below()`. No business logic. |
 | `scan.py` | The `scan` CLI. `probe()` wraps ffprobe. `collect_files()` walks dirs. `_process_one()` does the per-file work (probe → format → verdict). `main()` runs a `ThreadPoolExecutor` over files (default `cpu_count` workers, override with `-j N`). Column widths and ANSI formatting live here. Single-file mode (`_print_file_detail()`) prints a full breakdown: streams, all tags, verdict. Supports `--brickwall-threshold`, `--low-energy-db`, `--no-hf-db`, `--hi-res-no-hf-db`. |
-| `tag.py` | The `tag` CLI. Fingerprints via `fpcalc`, looks up AcoustID, enriches with MusicBrainz (`_fetch_musicbrainz()`), interactive arrow-key selector with live diff (`interactive_select()`). Enter writes immediately (no confirmation prompt); `s` skips. Skips files with complete metadata unless `-f`/`--force`. `-y` skips the write confirmation in non-TTY mode. `--read` inspects local tags without any network call. |
-| `transcode.py` | Standalone `transcode` CLI. `probe_audio()` gets codec/channel info via ffprobe, `transcode_to_aac()` runs ffmpeg to transcode any audio file to AAC 256k in M4A. Also used programmatically by `tags.py` when opus/vorbis files need conversion before tag writing. |
+| `tag.py` | The `tag` CLI. Orchestrator — delegates fingerprinting + AcoustID lookup to `api.acoustid`, MB enrichment to `api.musicbrainz`. Interactive arrow-key selector with live diff (`interactive_select()`). Enter writes immediately (no confirmation prompt); `s` skips. Skips files with complete metadata unless `-f`/`--force`. `-y` skips the write confirmation in non-TTY mode. `--read` inspects local tags without any network call. |
+| `api/acoustid.py` | AcoustID API client. `get_audio_fingerprint()` runs fpcalc. `fetch_acoustid_metadata()` calls the AcoustID v2/lookup endpoint. `extract_metadata()` parses the result into tag fields. Docs: https://acoustid.org/webservice |
+| `api/musicbrainz.py` | MusicBrainz API client. `search()` queries MB recordings. `fetch_recording()` looks up a single recording for genre, track number, and album artist. `_recording_to_result()` normalises MB format to AcoustID-compatible format. Docs: https://musicbrainz.org/doc/MusicBrainz_API |
 
 ## Commands
 
