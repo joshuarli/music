@@ -88,15 +88,17 @@ class TestFormatDiff:
         current = {}
         new = {"title": "New Title"}
         lines = format_diff(current, new)
-        assert len(lines) == 1
-        assert "+" in lines[0]
+        assert len(lines) == 2
+        assert "(none)" in lines[0]
+        assert "+" in lines[1]
 
     def test_changed_field(self):
         current = {"title": "Old"}
         new = {"title": "New"}
         lines = format_diff(current, new)
-        assert len(lines) == 1
-        assert "→" in lines[0]
+        assert len(lines) == 2
+        assert "Old" in lines[0]
+        assert "→" in lines[1]
 
     def test_no_changes(self):
         current = {"title": "Same"}
@@ -108,8 +110,8 @@ class TestFormatDiff:
         current = {"title": "Old Title", "artist": "Same Artist"}
         new = {"title": "New Title", "artist": "Same Artist", "album": "New Album"}
         lines = format_diff(current, new)
-        assert len(lines) == 2
-        # title changed, album added, artist unchanged
+        assert len(lines) == 4
+        # title changed (2 lines), album added (2 lines), artist unchanged
 
 
 class TestFetchAcoustidMetadata:

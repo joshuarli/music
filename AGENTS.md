@@ -2,7 +2,7 @@
 
 ## What this is
 
-Two CLI tools for managing a local audio library:
+Three CLI tools for managing a local audio library:
 
 - **`scan`** — walk a directory tree, probe every audio file with ffprobe, and
   print a colour-coded table of codec, bitrate, cover art, missing tags, and a
@@ -15,8 +15,20 @@ Two CLI tools for managing a local audio library:
   metadata (use `-f` to override). Transcodes opus/vorbis audio to AAC/M4A
   for tag compatibility and iOS playback. Also supports `--read` to inspect
   existing tags without any network call.
+- **`transcode`** — transcode a single audio file to high-quality AAC in an
+  M4A container via ffmpeg, preserving channel layout. Uses Apple AudioToolbox
+  (`aac_at`) on macOS, ffmpeg's native `aac` elsewhere. Supports `-o` to
+  specify the output path.
 
-Both run through `uv run scan ...` / `uv run tag ...` via `[project.scripts]`.
+All three run through `uv run scan ...` / `uv run tag ...` / `uv run transcode ...`
+via `[project.scripts]`.
+
+## Working style
+
+This is a small, single-directory Python project. All work must be done
+**inline** — never spawn sub-agents, explore agents, forks, or workflows.
+Read files directly, edit files directly. The only background work is running
+tests or the app itself.
 
 ## Separation of concerns
 
@@ -74,6 +86,7 @@ src/music/
 | `ui.py` | Shared ANSI formatting: `colored(text, code, bold, dim)`, `bold(text)`, `dim(text)`, `cursor_up(n)`, `clear_line()`, `clear_below()`. No business logic. |
 | `scan.py` | The `scan` CLI. `probe()` wraps ffprobe. `collect_files()` walks dirs. `_process_one()` does the per-file work (probe → format → verdict). `main()` runs a `ThreadPoolExecutor` over files (default `cpu_count` workers, override with `-j N`). Column widths and ANSI formatting live here. Single-file mode (`_print_file_detail()`) prints a full breakdown: streams, all tags, verdict. Supports `--brickwall-threshold`, `--low-energy-db`, `--no-hf-db`, `--hi-res-no-hf-db`. |
 | `tag.py` | The `tag` CLI. Fingerprints via `fpcalc`, looks up AcoustID, enriches with MusicBrainz (`_fetch_musicbrainz()`), interactive arrow-key selector with live diff (`interactive_select()`). Enter writes immediately (no confirmation prompt); `s` skips. Skips files with complete metadata unless `-f`/`--force`. `-y` skips the write confirmation in non-TTY mode. `--read` inspects local tags without any network call. |
+| `transcode.py` | Standalone `transcode` CLI. `probe_audio()` gets codec/channel info via ffprobe, `transcode_to_aac()` runs ffmpeg to transcode any audio file to AAC 256k in M4A. Also used programmatically by `tags.py` when opus/vorbis files need conversion before tag writing. |
 
 ## Commands
 
@@ -85,6 +98,8 @@ uv run scan --brickwall-threshold 30 .       # tune sensitivity
 uv run tag ~/Music/song.flac                # fingerprint + lookup + write (Enter=write, s=skip)
 uv run tag --read ~/Music/song.flac         # inspect existing tags (no network)
 uv run tag -f ~/Music/song.flac             # re-tag even if metadata is already complete
+uv run transcode ~/Music/song.opus          # transcode opus to AAC/M4A
+uv run transcode -o out.m4a song.webm       # specify output path
 uv run ruff format . && uv run ruff check . && uv run ty check   # lint + type-check
 ```
 

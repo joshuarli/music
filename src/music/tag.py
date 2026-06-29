@@ -16,7 +16,7 @@ import urllib.request
 from typing import Any
 
 from .tags import TAG_FIELDS, read_tags, write_tags
-from .ui import bold, dim, select_interactive
+from .ui import bold, colored, dim, select_interactive
 
 
 def get_audio_fingerprint(file_path):
@@ -297,15 +297,22 @@ def _print_tags(filepath: str) -> None:
 
 
 def format_diff(current: dict[str, str], new: dict[str, str]) -> list[str]:
-    """Return formatted diff lines for fields that differ between current and new tags."""
+    """Return formatted diff lines for fields that differ between current and new tags.
+
+    Each changed field produces two lines — the old value (red) on the first,
+    then the new value (green) on the next at the same column.
+
+        key      old_val
+               → new_val
+    """
     lines: list[str] = []
     all_keys = sorted(set(current.keys()) | set(new.keys()))
     if not all_keys:
         return lines
 
     key_w = max(len(k) for k in all_keys)
-    cur_w = max((len(current.get(k, "(none)")) for k in all_keys), default=0)
-    new_w = max((len(new.get(k, "(none)")) for k in all_keys), default=0)
+    # indent for the arrow line: 4 spaces + key + 2 spaces = same column as old value
+    indent = " " * (4 + key_w + 2)
 
     for key in all_keys:
         cur_val = current.get(key)
@@ -315,7 +322,8 @@ def format_diff(current: dict[str, str], new: dict[str, str]) -> list[str]:
         cur_display = cur_val or "(none)"
         new_display = new_val or "(none)"
         arrow = "+" if cur_val is None else "→"
-        lines.append(f"    {key:<{key_w}s}  {cur_display:<{cur_w}s} {arrow} {new_display:<{new_w}s}")
+        lines.append(f"    {key:<{key_w}s}  {colored(cur_display, 1)}")
+        lines.append(f"{indent}{arrow} {colored(new_display, 2)}")
 
     return lines
 
@@ -450,6 +458,17 @@ def main() -> None:
             return
 
     actual_path = write_tags(args.file, metadata)
+    if "title" in metadata:
+        dirname = os.path.dirname(args.file)
+        ext = os.path.splitext(args.file)[1]
+        safe_title = metadata["title"].replace("/", "-").replace("\x00", "")
+        new_path = os.path.join(dirname, safe_title + ext)
+        if new_path != actual_path:
+            if os.path.exists(new_path):
+                print(f"Warning: not renaming — {os.path.basename(new_path)} already exists.")
+            else:
+                os.rename(actual_path, new_path)
+                actual_path = new_path
     print(f"Wrote tags to {actual_path}.")
 
 
