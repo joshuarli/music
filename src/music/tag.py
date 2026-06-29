@@ -52,7 +52,7 @@ def fetch_acoustid_metadata(duration, fingerprint):
         "client": api_key,
         "duration": int(duration),
         "fingerprint": fingerprint,
-        "meta": "recordings releases",
+        "meta": "recordings releases tracks",
     }
 
     url = f"https://api.acoustid.org/v2/lookup?{urllib.parse.urlencode(params)}"
@@ -237,7 +237,7 @@ def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[s
 
 
 def extract_metadata(result: dict[str, Any]) -> dict[str, str]:
-    """Pull title, artist, album, date from one AcoustID result.
+    """Pull title, artist, album, date, track number from one AcoustID result.
 
     Returns a dict with only the keys that could be extracted.
     """
@@ -247,6 +247,8 @@ def extract_metadata(result: dict[str, Any]) -> dict[str, str]:
         return meta
 
     rec = recordings[0]
+    rec_id = rec.get("id")
+
     if "title" in rec:
         meta["title"] = rec["title"]
 
@@ -263,6 +265,21 @@ def extract_metadata(result: dict[str, Any]) -> dict[str, str]:
         year = date.get("year") if isinstance(date, dict) else None
         if year:
             meta["date"] = str(year)
+
+        # Track number — search media within releases for a track matching this recording
+        if rec_id:
+            for rel in releases:
+                for medium in rel.get("media", []):
+                    for track in medium.get("tracks", []):
+                        if track.get("id") == rec_id:
+                            tn = track.get("position")
+                            if tn:
+                                meta["tracknumber"] = str(tn)
+                            break
+                    if "tracknumber" in meta:
+                        break
+                if "tracknumber" in meta:
+                    break
 
     return meta
 
