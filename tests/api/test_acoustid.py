@@ -170,6 +170,40 @@ class TestExtractMetadata:
         assert meta["date"] == "1999"
         assert meta["tracknumber"] == "5"
 
+    def test_track_number_from_mb_fallback_format(self):
+        """extract_metadata works with results normalized by _recording_to_result,
+        where MB track.recording.id has been remapped to track.id."""
+        result = {
+            "score": 0.95,
+            "recordings": [
+                {
+                    "id": "rec-mbid-1",
+                    "title": "Test Song",
+                    "artists": [{"name": "Test Artist"}],
+                    "releases": [
+                        {
+                            "title": "Test Album",
+                            "date": {"year": 2024},
+                            "media": [
+                                {
+                                    "tracks": [
+                                        {"id": "other-rec", "position": 1},
+                                        {"id": "rec-mbid-1", "position": 5},
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        meta = extract_metadata(result)
+        assert meta["title"] == "Test Song"
+        assert meta["artist"] == "Test Artist"
+        assert meta["album"] == "Test Album"
+        assert meta["date"] == "2024"
+        assert meta["tracknumber"] == "5"
+
     def test_record_without_tracks(self):
         """Result with releases but no media/track info."""
         result = ACOUSTID_RESPONSE["results"][1]

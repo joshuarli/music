@@ -32,6 +32,18 @@ def _recording_to_result(recording: dict[str, Any]) -> dict[str, Any]:
             year = date.split("-")[0] if isinstance(date, str) else None
             if year:
                 r["date"] = {"year": int(year)}
+        # Pass through media/tracks so extract_metadata can find track numbers.
+        # Normalize MB track format (track.id=track MBID, track.recording.id=recording MBID)
+        # to AcoustID format (track.id=recording MBID).
+        media = rel.get("media")
+        if media:
+            r["media"] = [
+                {
+                    **m,
+                    "tracks": [{**t, "id": t.get("recording", {}).get("id", t.get("id"))} for t in m.get("tracks", [])],
+                }
+                for m in media
+            ]
         if r:
             mb_releases.append(r)
 
@@ -73,7 +85,7 @@ def fetch_recording(recording_mbid: str) -> dict[str, str]:
     try:
         data = _session.get_json(
             f"{MB_BASE}/recording/{recording_mbid}",
-            params={"inc": "genres artists releases", "fmt": "json"},
+            params={"inc": "genres artists releases media", "fmt": "json"},
         )
     except Exception:
         return meta
@@ -84,12 +96,15 @@ def fetch_recording(recording_mbid: str) -> dict[str, str]:
         top = sorted(genres, key=lambda g: g.get("count", 0), reverse=True)
         meta["genre"] = ", ".join(g["name"] for g in top[:3] if g.get("name"))
 
-    # Track number — search releases for a track whose recording ID matches
+    # Track number — search releases for a track matching this recording.
+    # Recording lookups omit the track.recording sub-object (it's the looked-up
+    # recording), so a missing recording key counts as a match.
     releases = data.get("releases", [])
     for rel in releases:
         for medium in rel.get("media", []):
             for track in medium.get("tracks", []):
-                if track.get("recording", {}).get("id") == recording_mbid:
+                track_rec = track.get("recording")
+                if track_rec is None or track_rec.get("id") == recording_mbid:
                     tn = track.get("number")
                     if tn:
                         meta["tracknumber"] = str(tn)

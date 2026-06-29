@@ -247,14 +247,11 @@ def main() -> None:
 
     selected = results[selected_idx]
     metadata = extract_metadata(selected)
-
-    # Enrich with MusicBrainz data (track number, genre, album artist)
     recordings = selected.get("recordings", [])
     if recordings:
         mbid = recordings[0].get("id")
         if mbid:
-            mb_meta = fetch_recording(mbid)
-            metadata.update(mb_meta)
+            metadata.update(fetch_recording(mbid))
 
     current_tags = read_tags(args.file)
     diff = format_diff(current_tags, metadata)

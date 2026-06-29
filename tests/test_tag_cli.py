@@ -183,3 +183,21 @@ class TestFallbackSearch:
         with patch("music.api.musicbrainz._session.get_json", return_value={"recordings": []}):
             results = _fallback_search("/path/01 - .mp3", {"title": "Unknown"})
             assert results == []
+
+    def test_fallback_search_preserves_recording_id(self):
+        """MB search results include the recording id so fetch_recording
+        can later look up track numbers, genre, and album artist."""
+        mb_response = {
+            "recordings": [
+                {
+                    "id": "rec-mb-1",
+                    "title": "Song",
+                    "score": 95,
+                    "releases": [{"title": "Album", "date": "2024"}],
+                }
+            ],
+        }
+        with patch("music.api.musicbrainz._session.get_json", return_value=mb_response):
+            results = _fallback_search("/some/file.mp3", {"title": "Song"})
+            assert len(results) == 1
+            assert results[0]["recordings"][0]["id"] == "rec-mb-1"
