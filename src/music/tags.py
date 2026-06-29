@@ -2,7 +2,9 @@
 place that touches mutagen for metadata I/O.
 """
 
+import json
 import os
+import subprocess
 import sys
 
 from mutagen import File as MutagenFile
@@ -21,9 +23,60 @@ TAG_FIELDS = ("title", "artist", "album", "date", "tracknumber", "albumartist", 
 # Mutagen types that support direct tag writing
 _WRITABLE_TYPES = (FLAC, OggFLAC, OggVorbis, OggOpus, MP3, MP4)
 
+# Map ffprobe tag names (lowercase) to our canonical field names
+_FFPROBE_TAG_MAP = {
+    "title": "title",
+    "artist": "artist",
+    "album": "album",
+    "date": "date",
+    "track": "tracknumber",
+    "tracknumber": "tracknumber",
+    "track_number": "tracknumber",
+    "album_artist": "albumartist",
+    "albumartist": "albumartist",
+    "genre": "genre",
+}
+
+
+def _read_tags_ffprobe(filepath: str) -> dict[str, str]:
+    """Read tags via ffprobe as a fallback for containers mutagen can't handle."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_entries",
+                "format_tags",
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {}
+        data = json.loads(result.stdout)
+    except Exception:
+        return {}
+
+    tags = data.get("format", {}).get("tags", {})
+    if not tags:
+        return {}
+
+    result: dict[str, str] = {}
+    for ff_key, val in tags.items():
+        field = _FFPROBE_TAG_MAP.get(ff_key.lower())
+        if field and val:
+            result[field] = str(val)
+
+    return result
+
 
 def read_tags(filepath: str) -> dict[str, str]:
-    """Read tags from *filepath* using mutagen.
+    """Read tags from *filepath* using mutagen, with ffprobe fallback.
 
     Returns a dict mapping field name to string value.  Fields that are
     absent or empty are omitted from the dict.
@@ -31,10 +84,10 @@ def read_tags(filepath: str) -> dict[str, str]:
     try:
         audio = MutagenFile(filepath)
     except Exception:
-        return {}
+        return _read_tags_ffprobe(filepath)
 
     if audio is None:
-        return {}
+        return _read_tags_ffprobe(filepath)
 
     result: dict[str, str] = {}
 

@@ -204,17 +204,17 @@ def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[s
     """Fallback when AcoustID fingerprint lookup returns no matches.
 
     Strategy:
-    1. Search MusicBrainz using file metadata (title, artist, album).
+    1. Search MusicBrainz using file metadata (title, artist).
     2. Search MusicBrainz using a normalized filename as the song title.
     """
-    # Strategy 1: metadata from file tags
+    # Strategy 1: metadata from file tags.
+    # Only recording + artist — the album name from file tags rarely matches
+    # MusicBrainz canonical release titles, so including it blocks valid hits.
     query_parts = []
     if current_tags.get("title"):
         query_parts.append(f"recording:({current_tags['title']})")
     if current_tags.get("artist"):
         query_parts.append(f"artist:({current_tags['artist']})")
-    if current_tags.get("album"):
-        query_parts.append(f"release:({current_tags['album']})")
 
     if query_parts:
         query = " AND ".join(query_parts)

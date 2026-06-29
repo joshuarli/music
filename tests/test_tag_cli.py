@@ -412,7 +412,7 @@ class TestSearchMusicBrainz:
 
 class TestFallbackSearch:
     def test_metadata_search_succeeds(self):
-        """When file has metadata, searches MusicBrainz with it."""
+        """When file has metadata, searches MusicBrainz with recording + artist."""
         mb_response = {"recordings": [{"id": "mb-1", "title": "Found Song", "score": 95}]}
         with patch("urllib.request.urlopen") as mock_open:
             mock_resp = MagicMock()
@@ -423,7 +423,6 @@ class TestFallbackSearch:
             tags = {
                 "title": "Found Song",
                 "artist": "Test Artist",
-                "album": "Test Album",
             }
             results = _fallback_search("/some/file.mp3", tags)
             assert len(results) == 1
