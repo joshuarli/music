@@ -179,7 +179,8 @@ def collect_files(paths: list[str]) -> list[tuple[Path, str]]:
 
     For directories, recurses through files matching AUDIO_EXTENSIONS and shows
     paths relative to that directory.  For individual files the extension filter
-    is skipped — pass anything and ffprobe will sort it out.
+    is skipped — pass anything and ffprobe will sort it out.  Paths that don't
+    exist on disk are treated as files (the caller asked for them explicitly).
     """
     result: list[tuple[Path, str]] = []
     seen: set[Path] = set()
@@ -196,7 +197,7 @@ def collect_files(paths: list[str]) -> list[tuple[Path, str]]:
                 if key not in seen:
                     seen.add(key)
                     result.append((f, str(f.relative_to(p))))
-        elif p.is_file():
+        else:
             key = p.resolve()
             if key not in seen:
                 seen.add(key)

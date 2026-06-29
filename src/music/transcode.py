@@ -1,5 +1,8 @@
 """Audio transcoding via ffmpeg.  Convert audio files to high-quality AAC
 in an M4A container, preserving channel layout and copying metadata.
+
+Accepts both files and directories.  Directories are walked recursively
+for known audio extensions.
 """
 
 import argparse
@@ -8,6 +11,8 @@ import os
 import subprocess
 import sys
 from typing import Any
+
+from .scan import collect_files
 
 # Prefer Apple AudioToolbox encoder on macOS (hardware-accelerated, higher quality)
 _AAC_ENCODER = "aac_at" if sys.platform == "darwin" else "aac"
@@ -92,29 +97,57 @@ def transcode_to_aac(filepath: str, dst: str | None = None) -> str | None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Transcode audio files to high-quality AAC in an M4A container.")
-    p.add_argument("file", help="audio file to transcode")
-    p.add_argument("-o", "--output", help="output path (default: <input>.m4a)")
+    p = argparse.ArgumentParser(
+        description="Transcode audio files to high-quality AAC in an M4A container."
+    )
+    p.add_argument(
+        "paths", nargs="*", default=["."], help="audio files or directories to transcode"
+    )
+    p.add_argument(
+        "-o", "--output", help="output path (only valid for a single input file)"
+    )
     args = p.parse_args()
 
-    info = probe_audio(args.file)
-    if info is None:
-        print(f"error: no audio stream found in {args.file}", file=sys.stderr)
+    files = collect_files(args.paths)
+
+    if not files:
+        print("No audio files found.", file=sys.stderr)
         sys.exit(1)
 
-    codec = info.get("codec_name", "?")
-    channels = info.get("channels")
-    ch_map = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
-    ch_label = ch_map.get(channels, f"{channels}ch") if channels else "?"
-
-    print(f"Source: {codec}, {ch_label}")
-
-    result = transcode_to_aac(args.file, dst=args.output)
-    if result is None:
-        print("error: transcode failed", file=sys.stderr)
+    if args.output and len(files) > 1:
+        print("error: -o/--output can only be used with a single input file", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Wrote: {result}")
+    success = 0
+    failed = 0
+    for fp, _ in files:
+        src = str(fp)
+        info = probe_audio(src)
+        if info is None:
+            print(f"error: no audio stream found in {src}", file=sys.stderr)
+            failed += 1
+            continue
+
+        codec = info.get("codec_name", "?")
+        channels = info.get("channels")
+        ch_map = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
+        ch_label = ch_map.get(channels, f"{channels}ch") if channels else "?"
+
+        dst = args.output or None
+        result = transcode_to_aac(src, dst=dst)
+        if result is None:
+            print(f"error: transcode failed: {src}", file=sys.stderr)
+            failed += 1
+        else:
+            if len(files) > 1:
+                print(f"{src} → {result} ({codec}, {ch_label})")
+            else:
+                print(f"Source: {codec}, {ch_label}")
+                print(f"Wrote: {result}")
+            success += 1
+
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
