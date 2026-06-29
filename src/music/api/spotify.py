@@ -2,6 +2,8 @@
 
 Extracted from spotapi/SpotipyFree internals. No credentials, login, or TLS
 fingerprinting needed — uses Spotify's private web-player API via urllib3.
+
+API docs: https://developer.spotify.com/documentation/web-api
 """
 
 import base64
@@ -14,7 +16,7 @@ import struct
 import time
 from typing import Any
 
-from src.music.http import Session
+from music.http import Session
 
 _SECRETS_URL = "https://code.thetadev.de/ThetaDev/spotify-secrets/raw/branch/main/secrets/secretDict.json"
 _FALLBACK_SECRET = (

@@ -49,7 +49,7 @@ class Session:
         if self.rate_limiter:
             self.rate_limiter.acquire()
 
-    def get(self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> bytes:
+    def get(self, url: str, params: dict[str, str | int] | None = None, headers: dict[str, str] | None = None) -> bytes:
         """GET *url* with optional query params. Returns raw body bytes."""
         self._wait()
         if params:
@@ -59,13 +59,15 @@ class Session:
         return resp.data
 
     def get_json(
-        self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None
-    ) -> dict[str, Any] | list[Any]:
+        self, url: str, params: dict[str, str | int] | None = None, headers: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         """GET *url* and parse JSON response."""
         data = self.get(url, params=params, headers=headers)
         return json.loads(data.decode("utf-8"))
 
-    def get_text(self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> str:
+    def get_text(
+        self, url: str, params: dict[str, str | int] | None = None, headers: dict[str, str] | None = None
+    ) -> str:
         """GET *url* and return response as string."""
         data = self.get(url, params=params, headers=headers)
         return data.decode("utf-8")
@@ -73,7 +75,7 @@ class Session:
     def post(
         self,
         url: str,
-        params: dict[str, str] | None = None,
+        params: dict[str, str | int] | None = None,
         json_body: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> bytes:
@@ -93,10 +95,10 @@ class Session:
     def post_json(
         self,
         url: str,
-        params: dict[str, str] | None = None,
+        params: dict[str, str | int] | None = None,
         json_body: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
-    ) -> dict[str, Any] | list[Any]:
+    ) -> dict[str, Any]:
         """POST *url* and parse JSON response."""
         data = self.post(url, params=params, json_body=json_body, headers=headers)
         return json.loads(data.decode("utf-8"))

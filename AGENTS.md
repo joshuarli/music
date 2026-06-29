@@ -76,9 +76,10 @@ src/music/
 ├── scan.py          # probe, format, collect, main() entry point
 ├── tag.py           # CLI orchestrator: fpcalc → AcoustID → MB → mutagen write
 └── api/
-    ├── __init__.py  # empty
-    ├── acoustid.py  # fpcalc fingerprinting + AcoustID API lookup + result parsing
-    └── musicbrainz.py  # MusicBrainz search + recording lookup
+    ├── __init__.py     # empty
+    ├── acoustid.py     # fpcalc + AcoustID API lookup (rate-limited 3/sec) + result parsing
+    ├── musicbrainz.py  # MusicBrainz search + recording lookup (rate-limited 1/sec)
+    └── spotify.py      # unauthenticated Spotify playlist fetching
 ```
 
 | Module | Purpose |
@@ -90,8 +91,9 @@ src/music/
 | `ui.py` | Shared ANSI formatting: `colored(text, code, bold, dim)`, `bold(text)`, `dim(text)`, `cursor_up(n)`, `clear_line()`, `clear_below()`. No business logic. |
 | `scan.py` | The `scan` CLI. `probe()` wraps ffprobe. `collect_files()` walks dirs. `_process_one()` does the per-file work (probe → format → verdict). `main()` runs a `ThreadPoolExecutor` over files (default `cpu_count` workers, override with `-j N`). Column widths and ANSI formatting live here. Single-file mode (`_print_file_detail()`) prints a full breakdown: streams, all tags, verdict. Supports `--brickwall-threshold`, `--low-energy-db`, `--no-hf-db`, `--hi-res-no-hf-db`. |
 | `tag.py` | The `tag` CLI. Orchestrator — delegates fingerprinting + AcoustID lookup to `api.acoustid`, MB enrichment to `api.musicbrainz`. Interactive arrow-key selector with live diff (`interactive_select()`). Enter writes immediately (no confirmation prompt); `s` skips. Skips files with complete metadata unless `-f`/`--force`. `-y` skips the write confirmation in non-TTY mode. `--read` inspects local tags without any network call. |
-| `api/acoustid.py` | AcoustID API client. `get_audio_fingerprint()` runs fpcalc. `fetch_acoustid_metadata()` calls the AcoustID v2/lookup endpoint. `extract_metadata()` parses the result into tag fields. Docs: https://acoustid.org/webservice |
-| `api/musicbrainz.py` | MusicBrainz API client. `search()` queries MB recordings. `fetch_recording()` looks up a single recording for genre, track number, and album artist. `_recording_to_result()` normalises MB format to AcoustID-compatible format. Docs: https://musicbrainz.org/doc/MusicBrainz_API |
+| `api/acoustid.py` | AcoustID API client. `get_audio_fingerprint()` runs fpcalc. `fetch_acoustid_metadata()` calls the AcoustID v2/lookup endpoint (rate-limited 3 req/sec). `extract_metadata()` parses the result into tag fields. Docs: https://acoustid.org/webservice |
+| `api/musicbrainz.py` | MusicBrainz API client. `search()` queries MB recordings, `fetch_recording()` looks up a single recording for genre/track number/album artist. Rate-limited 1 req/sec. Exports `MB_BASE` and `USER_AGENT` for use by `resolver.py`. Docs: https://musicbrainz.org/doc/MusicBrainz_API |
+| `api/spotify.py` | Unauthenticated Spotify playlist fetching via Spotify's private web-player API. `SpotifyPublicPlaylist.get_playlist()` returns playlist metadata and tracks. Docs: https://developer.spotify.com/documentation/web-api |
 
 ## Commands
 

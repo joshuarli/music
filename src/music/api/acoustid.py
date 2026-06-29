@@ -1,6 +1,7 @@
 """AcoustID API client — fingerprint audio with fpcalc, look up MusicBrainz
 recordings via the AcoustID web service.
 
+Rate-limited to 3 req/sec as recommended by the AcoustID API docs.
 API docs: https://acoustid.org/webservice
 """
 
@@ -8,9 +9,12 @@ import json
 import os
 import subprocess
 import sys
-import urllib.parse
-import urllib.request
 from typing import Any
+
+from music.http import RateLimiter, Session
+
+# AcoustID recommends no more than 3 req/sec
+_session = Session(user_agent="music-tag/0.1", rate_limiter=RateLimiter(rate=3.0))
 
 
 def get_audio_fingerprint(file_path):
@@ -49,26 +53,18 @@ def fetch_acoustid_metadata(duration, fingerprint):
         "meta": "recordings releases tracks",
     }
 
-    url = f"https://api.acoustid.org/v2/lookup?{urllib.parse.urlencode(params)}"
-
     try:
-        with urllib.request.urlopen(url) as response:
-            if response.status != 200:
-                print(f"API HTTP Error: {response.status}", file=sys.stderr)
-                return None
-
-            res_data = json.loads(response.read().decode("utf-8"))
-
-            if res_data.get("status") != "ok":
-                error_msg = res_data.get("error", {}).get("message", "Unknown API error")
-                print(f"AcoustID API Error: {error_msg}", file=sys.stderr)
-                return None
-
-            return res_data.get("results", [])
-
+        res_data = _session.get_json("https://api.acoustid.org/v2/lookup", params=params)
     except Exception as e:
         print(f"Network or parsing error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if res_data.get("status") != "ok":
+        error_msg = res_data.get("error", {}).get("message", "Unknown API error")
+        print(f"AcoustID API Error: {error_msg}", file=sys.stderr)
+        return None
+
+    return res_data.get("results", [])
 
 
 def extract_metadata(result: dict[str, Any]) -> dict[str, str]:

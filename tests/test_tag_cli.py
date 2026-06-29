@@ -1,5 +1,4 @@
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -145,12 +144,7 @@ class TestFallbackSearch:
     def test_metadata_search_succeeds(self):
         """When file has metadata, searches MusicBrainz with recording + artist."""
         mb_response = {"recordings": [{"id": "mb-1", "title": "Found Song", "score": 95}]}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_response).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value=mb_response):
             tags = {
                 "title": "Found Song",
                 "artist": "Test Artist",
@@ -163,19 +157,13 @@ class TestFallbackSearch:
         """When metadata search returns nothing, tries normalized filename."""
         call_count = [0]
 
-        def side_effect(req):
+        def side_effect(url, **kwargs):
             call_count[0] += 1
-            mock_resp = MagicMock()
             if call_count[0] == 2:
-                mock_resp.read.return_value = json.dumps(
-                    {"recordings": [{"id": "mb-2", "title": "Filename Song", "score": 90}]}
-                ).encode()
-            else:
-                mock_resp.read.return_value = json.dumps({"recordings": []}).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            return mock_resp
+                return {"recordings": [{"id": "mb-2", "title": "Filename Song", "score": 90}]}
+            return {"recordings": []}
 
-        with patch("urllib.request.urlopen", side_effect=side_effect):
+        with patch("music.api.musicbrainz._session.get_json", side_effect=side_effect):
             tags = {
                 "title": "Some Title",
                 "artist": "Some Artist",
@@ -186,24 +174,12 @@ class TestFallbackSearch:
 
     def test_no_metadata_and_bad_filename(self):
         """When nothing works, returns empty list."""
-        mb_response = {"recordings": []}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_response).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value={"recordings": []}):
             results = _fallback_search("/path/01 - .mp3", {})
             assert results == []
 
     def test_empty_tags_no_filename_match(self):
         """No metadata in file, filename normalizes to empty/nothing useful."""
-        mb_response = {"recordings": []}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mb_response).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value={"recordings": []}):
             results = _fallback_search("/path/01 - .mp3", {"title": "Unknown"})
             assert results == []

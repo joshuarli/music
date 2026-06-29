@@ -1,14 +1,18 @@
 """MusicBrainz API client — query recordings, fetch genre/artist/track metadata.
 
+Rate-limited to 1 req/sec as required by the MusicBrainz API terms.
 API docs: https://musicbrainz.org/doc/MusicBrainz_API
 """
 
-import json
-import urllib.parse
-import urllib.request
 from typing import Any
 
-_USER_AGENT = "music-tag/0.1"
+from music.http import RateLimiter, Session
+
+MB_BASE = "https://musicbrainz.org/ws/2"
+USER_AGENT = "music-tag/0.1"
+
+# MusicBrainz requires 1 req/sec
+_session = Session(user_agent=USER_AGENT, rate_limiter=RateLimiter(rate=1.0))
 
 
 def _recording_to_result(recording: dict[str, Any]) -> dict[str, Any]:
@@ -48,13 +52,11 @@ def _recording_to_result(recording: dict[str, Any]) -> dict[str, Any]:
 
 def search(query: str) -> list[dict[str, Any]]:
     """Search MusicBrainz recordings and return results in AcoustID-compatible format."""
-    params = urllib.parse.urlencode({"query": query, "fmt": "json", "limit": "10"})
-    url = f"https://musicbrainz.org/ws/2/recording/?{params}"
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-
     try:
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
+        data = _session.get_json(
+            f"{MB_BASE}/recording/",
+            params={"query": query, "fmt": "json", "limit": "10"},
+        )
     except Exception:
         return []
 
@@ -68,12 +70,11 @@ def fetch_recording(recording_mbid: str) -> dict[str, str]:
     Returns a dict with only the keys that could be extracted.
     """
     meta: dict[str, str] = {}
-    url = f"https://musicbrainz.org/ws/2/recording/{recording_mbid}?inc=genres+artists+releases&fmt=json"
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-
     try:
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
+        data = _session.get_json(
+            f"{MB_BASE}/recording/{recording_mbid}",
+            params={"inc": "genres artists releases", "fmt": "json"},
+        )
     except Exception:
         return meta
 

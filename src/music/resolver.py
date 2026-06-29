@@ -4,9 +4,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
-from src.music.http import Session
-
-_MB_BASE = "https://musicbrainz.org/ws/2"
+from music.api.musicbrainz import MB_BASE
+from music.http import Session
 
 
 def _normalize(s: str) -> str:
@@ -128,7 +127,7 @@ def resolve_track(session: Session, title: str, artist: str, duration_ms: int) -
 
     try:
         data = session.get_json(
-            f"{_MB_BASE}/recording/",
+            f"{MB_BASE}/recording/",
             params={"query": query, "fmt": "json", "limit": "10"},
         )
     except Exception:

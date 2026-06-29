@@ -1,7 +1,6 @@
 """Tests for MusicBrainz API client — uses mocked real API responses."""
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from music.api.musicbrainz import _recording_to_result, fetch_recording, search
 
@@ -118,58 +117,37 @@ class TestRecordingToResult:
 
 class TestFetchRecording:
     def test_returns_genre_tracknumber_and_albumartist(self):
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(MB_RECORDING_RESPONSE).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value=MB_RECORDING_RESPONSE):
             meta = fetch_recording("c5b13e18-c1f2-4c3a-a5b6-7d8e9f0a1b2c")
             assert meta["genre"] == "Classical, Piano, Finnish"
             assert meta["tracknumber"] == "5"
             assert meta["albumartist"] == "Ralf Gothóni"
 
     def test_handles_http_error(self):
-        with patch("urllib.request.urlopen", side_effect=Exception):
+        with patch("music.api.musicbrainz._session.get_json", side_effect=Exception):
             meta = fetch_recording("rec-id")
             assert meta == {}
 
     def test_no_genres(self):
         resp = {"id": "rec-id", "releases": []}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(resp).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value=resp):
             meta = fetch_recording("c5b13e18-c1f2-4c3a-a5b6-7d8e9f0a1b2c")
             assert "genre" not in meta
 
 
 class TestSearch:
     def test_returns_results(self):
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(MB_SEARCH_RESPONSE).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value=MB_SEARCH_RESPONSE):
             results = search('recording:"Test"')
             assert len(results) == 2
             assert results[0]["recordings"][0]["title"] == "Found Song"
 
     def test_handles_network_error(self):
-        with patch("urllib.request.urlopen", side_effect=Exception):
+        with patch("music.api.musicbrainz._session.get_json", side_effect=Exception):
             results = search('recording:"Test"')
             assert results == []
 
     def test_empty_response(self):
-        resp = {"recordings": []}
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(resp).encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.musicbrainz._session.get_json", return_value={"recordings": []}):
             results = search('recording:"Nonexistent"')
             assert results == []

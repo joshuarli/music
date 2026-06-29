@@ -1,7 +1,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from music.spotify import (
+from music.api.spotify import (
     _FALLBACK_SECRET,
     SpotifyPublicPlaylist,
     _generate_totp,
@@ -30,19 +30,19 @@ class TestGenerateTotp:
 class TestCachedSecret:
     def test_read_nonexistent(self, tmp_path):
         nonexistent = str(tmp_path / "nonexistent" / "secret.json")
-        with patch("music.spotify._CACHE_PATH", nonexistent):
+        with patch("music.api.spotify._CACHE_PATH", nonexistent):
             assert _read_cached_secret() is None
 
     def test_read_corrupt(self, tmp_path):
         corrupt = tmp_path / "secret.json"
         corrupt.write_text("not valid json")
-        with patch("music.spotify._CACHE_PATH", str(corrupt)):
+        with patch("music.api.spotify._CACHE_PATH", str(corrupt)):
             assert _read_cached_secret() is None
 
     def test_read_valid(self, tmp_path):
         cache_file = tmp_path / "secret.json"
         cache_file.write_text(json.dumps({"61": [1, 2, 3, 4]}))
-        with patch("music.spotify._CACHE_PATH", str(cache_file)):
+        with patch("music.api.spotify._CACHE_PATH", str(cache_file)):
             result = _read_cached_secret()
             assert result is not None
             assert result[0] == 61
@@ -51,13 +51,13 @@ class TestCachedSecret:
     def test_read_version_zero(self, tmp_path):
         cache_file = tmp_path / "secret.json"
         cache_file.write_text(json.dumps({"0": []}))
-        with patch("music.spotify._CACHE_PATH", str(cache_file)):
+        with patch("music.api.spotify._CACHE_PATH", str(cache_file)):
             assert _read_cached_secret() is None
 
     def test_write_creates_dir(self, tmp_path):
         cache_dir = str(tmp_path / "subdir")
         cache_file = tmp_path / "subdir" / "secret.json"
-        with patch("music.spotify._CACHE_DIR", cache_dir), patch("music.spotify._CACHE_PATH", cache_file):
+        with patch("music.api.spotify._CACHE_DIR", cache_dir), patch("music.api.spotify._CACHE_PATH", cache_file):
             _write_cached_secret({"61": [10, 20]})
             assert cache_file.exists()
             data = json.loads(cache_file.read_text())

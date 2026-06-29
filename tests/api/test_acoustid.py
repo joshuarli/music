@@ -124,15 +124,7 @@ class TestGetAudioFingerprint:
 class TestFetchAcoustidMetadata:
     def test_success(self, monkeypatch):
         monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        api_response = json.dumps(ACOUSTID_RESPONSE)
-
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = api_response.encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.acoustid._session.get_json", return_value=ACOUSTID_RESPONSE):
             results = fetch_acoustid_metadata(200.0, "fp123")
             assert len(results) == 2
             assert results[0]["score"] == 0.953
@@ -145,40 +137,24 @@ class TestFetchAcoustidMetadata:
 
     def test_api_error_status(self, monkeypatch):
         monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        api_response = json.dumps({"status": "error", "error": {"message": "Bad fingerprint"}})
-
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = api_response.encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch(
+            "music.api.acoustid._session.get_json",
+            return_value={"status": "error", "error": {"message": "Bad fingerprint"}},
+        ):
             results = fetch_acoustid_metadata(200.0, "fp123")
             assert results is None
 
     def test_http_error(self, monkeypatch):
         monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 500
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
-            results = fetch_acoustid_metadata(200.0, "fp123")
-            assert results is None
+        with (
+            patch("music.api.acoustid._session.get_json", side_effect=Exception("Connection error")),
+            pytest.raises(SystemExit),
+        ):
+            fetch_acoustid_metadata(200.0, "fp123")
 
     def test_empty_results(self, monkeypatch):
         monkeypatch.setenv("ACOUSTID_API_KEY", "test-key")
-        api_response = json.dumps(ACOUSTID_RESPONSE_EMPTY)
-
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = api_response.encode()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_open.return_value = mock_resp
-
+        with patch("music.api.acoustid._session.get_json", return_value=ACOUSTID_RESPONSE_EMPTY):
             results = fetch_acoustid_metadata(200.0, "fp123")
             assert results == []
 
