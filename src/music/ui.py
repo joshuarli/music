@@ -1,6 +1,9 @@
 """ANSI 256-color terminal formatting shared by scan and tag."""
 
 import sys
+from collections.abc import Callable
+
+import blessed
 
 # Resets
 _RESET = "\033[0m"
@@ -31,13 +34,33 @@ def dim(text: str) -> str:
     return f"{_DIM}{text}{_RESET}"
 
 
-def clear_line() -> None:
-    sys.stdout.write("\033[K")
+def select_interactive(render: Callable[[int], list[str]], item_count: int) -> int:
+    """Fullscreen arrow-key selector. Blocks until the user picks an item.
 
+    *render(idx)* returns the lines to display when item *idx* is highlighted.
+    Returns the selected index. Exits the process on q / s / ctrl-c.
+    """
+    term = blessed.Terminal()
+    selected = 0
+    last = item_count - 1
 
-def cursor_up(n: int) -> None:
-    sys.stdout.write(f"\033[{n}A")
+    def _display(idx: int) -> None:
+        content = "\n".join(render(idx))
+        print(term.home + term.clear_eos + content, end="", flush=True)
 
-
-def clear_below() -> None:
-    sys.stdout.write("\033[J")
+    with term.fullscreen(), term.hidden_cursor():
+        _display(0)
+        while True:
+            key = term.inkey()
+            if key.name == "KEY_UP":
+                selected = max(0, selected - 1)
+            elif key.name == "KEY_DOWN":
+                selected = min(last, selected + 1)
+            elif key.name == "KEY_ENTER":
+                return selected
+            elif str(key).lower() in ("q", "s") or key.name == "KEY_ESCAPE":
+                print("\nAborted.")
+                sys.exit(0)
+            else:
+                continue
+            _display(selected)

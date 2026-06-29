@@ -10,14 +10,13 @@ import os
 import re
 import subprocess
 import sys
-import termios
 import unicodedata
 import urllib.parse
 import urllib.request
 from typing import Any
 
 from .tags import TAG_FIELDS, read_tags, write_tags
-from .ui import bold, cursor_up, dim
+from .ui import bold, dim, select_interactive
 
 
 def get_audio_fingerprint(file_path):
@@ -211,15 +210,15 @@ def _fallback_search(filepath: str, current_tags: dict[str, str]) -> list[dict[s
     # Strategy 1: metadata from file tags
     query_parts = []
     if current_tags.get("title"):
-        query_parts.append(f'recording:({current_tags["title"]})')
+        query_parts.append(f"recording:({current_tags['title']})")
     if current_tags.get("artist"):
-        query_parts.append(f'artist:({current_tags["artist"]})')
+        query_parts.append(f"artist:({current_tags['artist']})")
     if current_tags.get("album"):
-        query_parts.append(f'release:({current_tags["album"]})')
+        query_parts.append(f"release:({current_tags['album']})")
 
     if query_parts:
         query = " AND ".join(query_parts)
-        print(f"  No fingerprint match. Searching MusicBrainz with file metadata...")
+        print("  No fingerprint match. Searching MusicBrainz with file metadata...")
         results = _search_musicbrainz(query)
         if results:
             print(f"  Found {len(results)} result(s) via metadata search.")
@@ -321,75 +320,15 @@ def format_diff(current: dict[str, str], new: dict[str, str]) -> list[str]:
     return lines
 
 
-def _raw_mode_enter() -> list[Any]:
-    """Switch terminal to raw mode. Returns previous termios settings."""
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    new = termios.tcgetattr(fd)
-    # Disable echo and canonical mode; read 1 byte at a time, no timeout
-    new[3] = new[3] & ~(termios.ECHO | termios.ICANON)
-    new[6][termios.VMIN] = 1
-    new[6][termios.VTIME] = 0
-    termios.tcsetattr(fd, termios.TCSANOW, new)
-    return old
-
-
-def _raw_mode_exit(old: list[Any]) -> None:
-    """Restore terminal settings."""
-    termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, old)
-
-
-def _read_key() -> str | None:
-    """Read a single keypress in raw mode.
-
-    Returns 'up', 'down', 'enter', 'q', 's', 'ctrl-c', or None for unhandled keys.
-    """
-    fd = sys.stdin.fileno()
-    b = os.read(fd, 1)
-    if b != b"\x1b":
-        if b in (b"\r", b"\n"):
-            return "enter"
-        if b in (b"q", b"Q"):
-            return "q"
-        if b in (b"s", b"S"):
-            return "s"
-        if b == b"\x03":
-            return "ctrl-c"
-        return None
-
-    # Escape sequence — set a brief timeout so we don't hang on lone Esc
-    new = termios.tcgetattr(fd)
-    new[6][termios.VTIME] = 1  # 100 ms
-    termios.tcsetattr(fd, termios.TCSANOW, new)
-    try:
-        b2 = os.read(fd, 1)
-        if b2 == b"[":
-            b3 = os.read(fd, 1)
-            if b3 == b"A":
-                return "up"
-            if b3 == b"B":
-                return "down"
-    except Exception:
-        pass
-    finally:
-        new[6][termios.VTIME] = 0
-        termios.tcsetattr(fd, termios.TCSANOW, new)
-    return None
-
-
 def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
     """Arrow-key navigable match selector with live diff.
 
     Returns the selected index into *results*.
     """
-    old_termios = _raw_mode_enter()
-    selected = 0
-    n = len(results)
     current_tags = read_tags(filepath)
 
-    def _build_lines(idx: int) -> list[str]:
-        lines: list[str] = []
-        lines.append("")
+    def render(idx: int) -> list[str]:
+        lines: list[str] = [""]
         for i, r in enumerate(results):
             line = format_match_line(i + 1, r)
             if i == idx:
@@ -406,36 +345,10 @@ def interactive_select(results: list[dict[str, Any]], filepath: str) -> int:
         else:
             lines.append("  (no changes — tags already match)")
         lines.append("")
-
         lines.append(dim("  ↑/↓ navigate  Enter write  s skip  q quit"))
         return lines
 
-    def _render(lines: list[str]) -> int:
-        for line in lines:
-            sys.stdout.write(line + "\033[K\n")
-        sys.stdout.flush()
-        return len(lines)
-
-    block_height = _render(_build_lines(selected))
-
-    while True:
-        key = _read_key()
-        if key == "up":
-            selected = max(0, selected - 1)
-        elif key == "down":
-            selected = min(n - 1, selected + 1)
-        elif key == "enter":
-            _raw_mode_exit(old_termios)
-            return selected
-        elif key in ("q", "ctrl-c") or key == "s":
-            _raw_mode_exit(old_termios)
-            print("\nAborted.")
-            sys.exit(0)
-        else:
-            continue
-
-        cursor_up(block_height)
-        block_height = _render(_build_lines(selected))
+    return select_interactive(render, len(results))
 
 
 def _fallback_select(results: list[dict[str, Any]]) -> int:

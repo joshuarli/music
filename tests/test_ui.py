@@ -1,4 +1,8 @@
-from music.ui import bold, clear_below, clear_line, colored, cursor_up, dim
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from music.ui import bold, colored, dim, select_interactive
 
 
 def test_colored_basic():
@@ -40,19 +44,93 @@ def test_dim():
     assert result == "\033[2mhello\033[0m"
 
 
-def test_clear_line(capsys):
-    clear_line()
-    captured = capsys.readouterr()
-    assert captured.out == "\033[K"
+class TestSelectInteractive:
+    def _key(self, name):
+        """Build a mock Keystroke with the given name attribute."""
+        k = MagicMock()
+        k.name = name
+        return k
 
+    def test_returns_on_enter(self):
+        def render(idx):
+            return [f"Item {idx}"]
 
-def test_cursor_up(capsys):
-    cursor_up(3)
-    captured = capsys.readouterr()
-    assert captured.out == "\033[3A"
+        with patch("blessed.Terminal") as mock_term_cls:
+            mock_term = MagicMock()
+            mock_term_cls.return_value = mock_term
+            mock_term.inkey.side_effect = [self._key("KEY_ENTER")]
+            mock_term.home = ""
+            mock_term.clear_eos = ""
 
+            result = select_interactive(render, 3)
+            assert result == 0
 
-def test_clear_below(capsys):
-    clear_below()
-    captured = capsys.readouterr()
-    assert captured.out == "\033[J"
+    def test_navigates_down(self):
+        def render(idx):
+            return [f"Item {idx}"]
+
+        with patch("blessed.Terminal") as mock_term_cls:
+            mock_term = MagicMock()
+            mock_term_cls.return_value = mock_term
+            mock_term.inkey.side_effect = [
+                self._key("KEY_DOWN"),
+                self._key("KEY_DOWN"),
+                self._key("KEY_ENTER"),
+            ]
+            mock_term.home = ""
+            mock_term.clear_eos = ""
+
+            result = select_interactive(render, 3)
+            assert result == 2
+
+    def test_up_clamped(self):
+        def render(idx):
+            return [f"Item {idx}"]
+
+        with patch("blessed.Terminal") as mock_term_cls:
+            mock_term = MagicMock()
+            mock_term_cls.return_value = mock_term
+            mock_term.inkey.side_effect = [
+                self._key("KEY_UP"),
+                self._key("KEY_UP"),
+                self._key("KEY_ENTER"),
+            ]
+            mock_term.home = ""
+            mock_term.clear_eos = ""
+
+            result = select_interactive(render, 3)
+            assert result == 0  # clamped at top
+
+    def test_down_clamped(self):
+        def render(idx):
+            return [f"Item {idx}"]
+
+        with patch("blessed.Terminal") as mock_term_cls:
+            mock_term = MagicMock()
+            mock_term_cls.return_value = mock_term
+            mock_term.inkey.side_effect = [
+                self._key("KEY_DOWN"),
+                self._key("KEY_DOWN"),
+                self._key("KEY_DOWN"),
+                self._key("KEY_DOWN"),
+                self._key("KEY_ENTER"),
+            ]
+            mock_term.home = ""
+            mock_term.clear_eos = ""
+
+            result = select_interactive(render, 3)
+            assert result == 2  # clamped at bottom
+
+    def test_quit_on_escape(self):
+        def render(idx):
+            return [f"Item {idx}"]
+
+        with patch("blessed.Terminal") as mock_term_cls:
+            mock_term = MagicMock()
+            mock_term_cls.return_value = mock_term
+            mock_term.inkey.return_value = self._key("KEY_ESCAPE")
+            mock_term.home = ""
+            mock_term.clear_eos = ""
+
+            with pytest.raises(SystemExit):
+                select_interactive(render, 3)

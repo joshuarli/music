@@ -9,6 +9,7 @@ description = "Audio library tools: scan collections, fingerprint tracks"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "blessed>=1.20",
     "mutagen>=1.48.1",
 ]
 
