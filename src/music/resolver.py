@@ -2,6 +2,7 @@
 
 import re
 from difflib import SequenceMatcher
+from typing import Any
 
 from src.music.http import Session
 
@@ -15,7 +16,7 @@ def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _artist_from_credit(credit: list[dict]) -> str:
+def _artist_from_credit(credit: list[dict[str, Any]]) -> str:
     names = [e.get("name", "") for e in credit if isinstance(e, dict) and e.get("name")]
     return ", ".join(names)
 
@@ -74,7 +75,7 @@ def _extract_distinctive_words(title: str, artist: str) -> str:
     return " ".join(query_parts)
 
 
-def _score(result: dict, title: str, artist: str, duration_ms: int) -> float:
+def _score(result: dict[str, Any], title: str, artist: str, duration_ms: int) -> float:
     """Score a MusicBrainz recording against a Spotify track. Higher = better."""
     score = 0.0
     mb_title = result.get("title", "")
@@ -121,7 +122,7 @@ def _score(result: dict, title: str, artist: str, duration_ms: int) -> float:
     return score
 
 
-def resolve_track(session: Session, title: str, artist: str, duration_ms: int) -> dict | None:
+def resolve_track(session: Session, title: str, artist: str, duration_ms: int) -> dict[str, Any] | None:
     """Look up one track. Returns best matching MB recording or None."""
     query = _extract_distinctive_words(title, artist)
 
@@ -160,8 +161,8 @@ def resolve_track(session: Session, title: str, artist: str, duration_ms: int) -
 
 def resolve_tracks(
     session: Session,
-    tracks: list[dict],
-) -> tuple[list[dict], list[dict]]:
+    tracks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Resolve all tracks. Returns (resolved, unresolved)."""
     resolved = []
     unresolved = []

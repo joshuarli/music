@@ -3,9 +3,7 @@ place that touches mutagen for metadata I/O.
 """
 
 import os
-import shutil
 import sys
-import tempfile
 
 from mutagen import File as MutagenFile
 from mutagen.easyid3 import EasyID3
@@ -13,16 +11,15 @@ from mutagen.easymp4 import EasyMP4
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
+from mutagen.oggflac import OggFLAC
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
-
-from .transcode import AAC_EXT, transcode_to_aac
 
 # Fields we care about, in display order
 TAG_FIELDS = ("title", "artist", "album", "date", "tracknumber", "albumartist", "genre")
 
-# Mutagen types that should be transcoded to AAC before tag writing
-_TRANSCODE_TYPES = (OggOpus, OggVorbis)
+# Mutagen types that support direct tag writing
+_WRITABLE_TYPES = (FLAC, OggFLAC, OggVorbis, OggOpus, MP3, MP4)
 
 
 def read_tags(filepath: str) -> dict[str, str]:
@@ -74,25 +71,17 @@ def read_tags(filepath: str) -> dict[str, str]:
 def write_tags(filepath: str, metadata: dict[str, str]) -> str:
     """Write *metadata* to *filepath* using mutagen.
 
-    Returns the filepath that was actually written to (may differ from the
-    input if a format conversion was needed).
+    Returns the filepath written to.  Exits with an error if the file
+    format does not support tag writing — run 'transcode' first to
+    convert it to a writable format.
     """
     audio = MutagenFile(filepath)
 
-    if isinstance(audio, _TRANSCODE_TYPES) or audio is None:
-        # Transcode to a temp file, write tags, then move into place.
-        # This keeps the original intact if anything fails.
-        base = os.path.splitext(os.path.basename(filepath))[0]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = os.path.join(tmpdir, base + AAC_EXT)
-            tmp_path = transcode_to_aac(filepath, dst=tmp_path)
-            if tmp_path is None:
-                print(f"error: unsupported audio format: {filepath}", file=sys.stderr)
-                sys.exit(1)
-            _write_tags_direct(tmp_path, metadata)
-            os.remove(filepath)
-            shutil.move(tmp_path, filepath)
-        return filepath
+    if not isinstance(audio, _WRITABLE_TYPES):
+        ext = os.path.splitext(filepath)[1].lower() or "unknown"
+        print(f"error: cannot write tags to {ext} files", file=sys.stderr)
+        print("  Run 'transcode' first to convert to a writable format.", file=sys.stderr)
+        sys.exit(1)
 
     _write_tags_direct(filepath, metadata)
     return filepath

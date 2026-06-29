@@ -12,6 +12,7 @@ import os
 import re
 import struct
 import time
+from typing import Any
 
 from src.music.http import Session
 
@@ -69,7 +70,7 @@ def _read_cached_secret() -> tuple[int, bytearray] | None:
         return None
 
 
-def _write_cached_secret(data: dict) -> None:
+def _write_cached_secret(data: dict[str, Any]) -> None:
     """Persist the secretDict to disk."""
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -191,6 +192,7 @@ class SpotifyPublicPlaylist:
         # 1. TOTP from obfuscated secret (cached first, refetch on failure)
         version, secret_bytes = _fetch_totp_secret(self._session)
 
+        client_id: str | None = None
         for attempt in (1, 2):
             totp = _generate_totp(version, secret_bytes)
 
@@ -244,8 +246,10 @@ class SpotifyPublicPlaylist:
         self._sha_hash = _get_sha256_hash(self._session, js_pack_url, "fetchPlaylist")
 
     @property
-    def _api_headers(self) -> dict:
+    def _api_headers(self) -> dict[str, str]:
         self._authenticate()
+        assert self._client_token is not None
+        assert self._client_version is not None
         return {
             "Authorization": f"Bearer {self._access_token}",
             "Client-Token": self._client_token,
@@ -254,7 +258,7 @@ class SpotifyPublicPlaylist:
             "Accept-Language": "en",
         }
 
-    def _graphql(self, operation: str, variables: dict) -> dict:
+    def _graphql(self, operation: str, variables: dict[str, Any]) -> dict[str, Any]:
         """POST to Spotify's persisted-query GraphQL endpoint."""
         return self._session.post_json(
             "https://api-partner.spotify.com/pathfinder/v1/query",
@@ -273,7 +277,7 @@ class SpotifyPublicPlaylist:
             headers=self._api_headers,
         )
 
-    def get_playlist(self, playlist_id: str) -> tuple[dict, list[dict]]:
+    def get_playlist(self, playlist_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Fetch playlist metadata and full track list.
 
         Returns (metadata, tracks). Each track is a dict with keys:

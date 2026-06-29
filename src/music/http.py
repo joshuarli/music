@@ -3,6 +3,7 @@
 import json
 import threading
 import time
+from typing import Any
 from urllib.parse import urlencode
 
 from urllib3 import PoolManager
@@ -48,7 +49,7 @@ class Session:
         if self.rate_limiter:
             self.rate_limiter.acquire()
 
-    def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> bytes:
+    def get(self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> bytes:
         """GET *url* with optional query params. Returns raw body bytes."""
         self._wait()
         if params:
@@ -57,18 +58,18 @@ class Session:
         resp = self.pool.request("GET", url, headers=merged)
         return resp.data
 
-    def get_json(self, url: str, params: dict | None = None, headers: dict | None = None) -> dict | list:
+    def get_json(self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> dict[str, Any] | list[Any]:
         """GET *url* and parse JSON response."""
         data = self.get(url, params=params, headers=headers)
         return json.loads(data.decode("utf-8"))
 
-    def get_text(self, url: str, params: dict | None = None, headers: dict | None = None) -> str:
+    def get_text(self, url: str, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> str:
         """GET *url* and return response as string."""
         data = self.get(url, params=params, headers=headers)
         return data.decode("utf-8")
 
     def post(
-        self, url: str, params: dict | None = None, json_body: dict | None = None, headers: dict | None = None
+        self, url: str, params: dict[str, str] | None = None, json_body: dict[str, Any] | None = None, headers: dict[str, str] | None = None
     ) -> bytes:
         """POST *url* with optional query params and JSON body. Returns raw bytes."""
         self._wait()
@@ -84,8 +85,8 @@ class Session:
         return resp.data
 
     def post_json(
-        self, url: str, params: dict | None = None, json_body: dict | None = None, headers: dict | None = None
-    ) -> dict | list:
+        self, url: str, params: dict[str, str] | None = None, json_body: dict[str, Any] | None = None, headers: dict[str, str] | None = None
+    ) -> dict[str, Any] | list[Any]:
         """POST *url* and parse JSON response."""
         data = self.post(url, params=params, json_body=json_body, headers=headers)
         return json.loads(data.decode("utf-8"))
